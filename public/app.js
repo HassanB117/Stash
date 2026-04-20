@@ -178,7 +178,7 @@
   }
 
   function formatDate(mtime) {
-    var d = new Date(mtime * 1000);
+    var d = new Date(mtime);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
 
