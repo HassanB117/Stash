@@ -1,64 +1,95 @@
-# captures
+# stash
 
-Personal game capture gallery. Drop game folders, share clips, done.
+A dead-simple, self-hosted gallery for your game captures. Point it at a folder, get a clean web UI, share clips with friends via disposable links. That's it.
 
-## Setup (2 commands)
+No uploads. No database. No cloud. Your files stay on your machine — stash just reads them.
 
-```
+![Node](https://img.shields.io/badge/node-%3E%3D18-green)
+![License](https://img.shields.io/badge/license-MIT-blue)
+
+---
+
+## Why
+
+Screenshot and clip folders turn into a graveyard. OS file explorers are ugly. Discord compresses your stuff into oblivion. Cloud services want your soul. Stash just shows your captures in a decent gallery and lets you share a single file with a link that dies in 24 hours.
+
+## Quick start
+
+```bash
 npm install
 npm start
 ```
 
-Open `http://localhost:3000` and the setup wizard guides you through:
+Open `http://localhost:3000`. The setup wizard asks for three things:
 
-1. Pick a username + password
-2. Paste the path to your captures folder
-3. Done
+1. A username
+2. A password (8+ chars)
+3. The path to your captures folder
 
-That's it. No config files, no editing scripts.
+Done. No config files to edit.
 
-## How it works
+## Folder layout
 
-Your captures folder should look like this — one subfolder per game:
+One subfolder per game. Stash scans the top level and treats each folder as a gallery:
 
 ```
-YourCapturesFolder/
-  Elden Ring/
-    boss-kill.mp4
-    sunset.png
-  Cyberpunk 2077/
-    night-city.jpg
+D:/Captures/
+├── Elden Ring/
+│   ├── malenia-kill.mp4
+│   └── erdtree.png
+├── Cyberpunk 2077/
+│   └── night-city.jpg
+└── Hollow Knight/
+    └── radiance.webm
 ```
 
-Drop new files in anytime — refresh the page and they show up.
+Drop new files in whenever. Refresh the page, they show up. Files are sorted newest-first by modified time.
 
-**Supported files:** jpg, jpeg, png, webp, gif, mp4, webm, mov
+**Supported:** `jpg` `jpeg` `png` `webp` `gif` `mp4` `webm` `mov`
 
-## Sharing clips with friends
+## Sharing clips
 
-Open any capture → click **share** → copy the link. Link works for 24 hours, then dies. Friends don't need a password.
+Open any capture → hit **share** → copy the link. The recipient doesn't need an account. Link self-destructs after 24 hours.
 
-For friends to access links from outside your home network, run **Cloudflare Tunnel**:
+To share outside your home network, the easiest route is Cloudflare Tunnel (free, no port forwarding, no static IP needed):
 
-1. Install cloudflared: https://github.com/cloudflare/cloudflared/releases
-2. Run: `cloudflared tunnel --url http://localhost:3000`
-3. You get a public `*.trycloudflare.com` URL — share links work through it.
+```bash
+# install cloudflared first: https://github.com/cloudflare/cloudflared/releases
+cloudflared tunnel --url http://localhost:3000
+```
 
-When running behind HTTPS, set `NODE_ENV=production` in the environment so cookies stay secure.
+You'll get a `*.trycloudflare.com` URL. Share links work through it.
 
-## Changing things later
+> When running behind HTTPS in production, set `NODE_ENV=production` so session cookies are marked secure.
 
-Click **settings** in the top bar. You can change your password and the captures folder path from the web UI.
+## Settings
 
-## Resetting everything
+Click **settings** in the top bar to change your password or swap the captures folder. No need to touch files.
 
-Delete `data/config.json` and restart the server. The setup wizard runs again.
+## Resetting
+
+Delete `data/config.json` and restart. The setup wizard runs again.
 
 ## Security
 
-- Passwords bcrypt-hashed (cost 12)
-- Login rate-limited (5 tries / 15 min per IP)
-- Session cookies httpOnly + sameSite=lax
-- Helmet sets CSP and other security headers
-- Path traversal blocked
-- No upload UI exists
+Not a toy — this actually has decent hygiene:
+
+- Passwords hashed with **bcrypt** (cost 12)
+- Login rate-limited (5 attempts / 15 min / IP)
+- Session cookies `httpOnly` + `sameSite=lax`
+- **Helmet** with a strict CSP (no inline scripts)
+- Path traversal blocked via resolved-path checks
+- No upload endpoint exists — captures can only appear via the filesystem
+- Share tokens are 256-bit random, single-file scoped, auto-expiring
+
+That said: don't expose it to the public internet without a tunnel or reverse proxy with HTTPS.
+
+## Stack
+
+- Node + Express
+- Plain HTML/CSS/vanilla JS frontend (no build step, no framework)
+- JSON files for config and share tokens (no database)
+
+## License
+
+MIT
