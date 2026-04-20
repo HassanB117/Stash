@@ -6,17 +6,23 @@
   let favorites = new Set();
   let siteUrl = '';
   let metaCache = {};
+  let recentItems = [];
+  let recentVisibleCount = 0;
+
+  const RECENT_PAGE_SIZE = 120;
 
   function $(id) { return document.getElementById(id); }
 
-  const grid          = $('grid');
-  const filtersEl     = $('filters');
-  const lightbox      = $('lightbox');
-  const lbContent     = $('lbContent');
-  const lbMeta        = $('lbMeta');
-  const shareModal    = $('shareModal');
-  const settingsModal = $('settingsModal');
-  const shareUrlEl    = $('shareUrl');
+  const grid            = $('grid');
+  const filtersEl       = $('filters');
+  const lightbox        = $('lightbox');
+  const lbContent       = $('lbContent');
+  const lbMeta          = $('lbMeta');
+  const shareModal      = $('shareModal');
+  const settingsModal   = $('settingsModal');
+  const shareUrlEl      = $('shareUrl');
+  const recentMoreBtn   = $('recentMoreBtn');
+  const recentShownCount = $('recentShownCount');
 
   // ── Tab switching ──────────────────────────────────────────────────────
   var tabRecent    = $('tabRecent');
@@ -40,6 +46,12 @@
   tabRecent.addEventListener('click', function () { setTab('recent'); });
   tabGames.addEventListener('click', function () { setTab('games'); });
   tabStarred.addEventListener('click', function () { setTab('starred'); });
+  if (recentMoreBtn) {
+    recentMoreBtn.addEventListener('click', function () {
+      recentVisibleCount = Math.min(recentVisibleCount + RECENT_PAGE_SIZE, recentItems.length);
+      renderRecentGrid();
+    });
+  }
 
   // ── Drilldown helpers ─────────────────────────────────────────────────
   var gamesLibrary  = $('gamesLibrary');
@@ -125,24 +137,46 @@
   }
 
   // ── Recent grid ───────────────────────────────────────────────────────
-  function renderGrid() {
+  function buildRecentItems() {
     var items = [];
     var games = Object.keys(allCaptures).sort();
     games.forEach(function (g) {
       allCaptures[g].forEach(function (f) { items.push(Object.assign({}, f, { game: g })); });
     });
     items.sort(function (a, b) { return b.mtime - a.mtime; });
+    return items;
+  }
 
-    if (items.length === 0) {
+  function renderRecentGrid() {
+    if (recentItems.length === 0) {
       grid.innerHTML = '<div class="empty">// NO CAPTURES DETECTED</div>';
+      if (recentShownCount) recentShownCount.textContent = '';
+      if (recentMoreBtn) recentMoreBtn.style.display = 'none';
       return;
     }
 
-    grid.innerHTML = items.map(function (item, i) {
+    var visible = recentItems.slice(0, recentVisibleCount);
+    grid.innerHTML = visible.map(function (item, i) {
       return renderTileHTML(item, i);
     }).join('');
 
-    attachTileEvents(grid, items);
+    attachTileEvents(grid, visible);
+
+    if (recentShownCount) {
+      recentShownCount.textContent = visible.length + ' / ' + recentItems.length + ' SHOWN';
+    }
+    if (recentMoreBtn) {
+      var moreLeft = recentVisibleCount < recentItems.length;
+      recentMoreBtn.style.display = moreLeft ? '' : 'none';
+      recentMoreBtn.disabled = !moreLeft;
+      recentMoreBtn.textContent = moreLeft ? 'LOAD MORE' : 'ALL LOADED';
+    }
+  }
+
+  function renderGrid() {
+    recentItems = buildRecentItems();
+    recentVisibleCount = Math.min(RECENT_PAGE_SIZE, recentItems.length);
+    renderRecentGrid();
   }
 
   // ── Starred grid ──────────────────────────────────────────────────────
@@ -184,7 +218,7 @@
     var date     = formatDate(item.mtime);
     var starred  = favorites.has(item.path);
     var media    = item.type === 'video'
-      ? '<video src="' + fileUrl + '" poster="' + thumbUrl + '" muted loop preload="none" playsinline></video><div class="badge" data-dur-badge>▶ CLIP</div>'
+      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + fileUrl + '"></video><div class="badge" data-dur-badge>▶ CLIP</div>'
       : '<img src="' + thumbUrl + '" alt="' + escapeHtml(item.name) + '" loading="lazy" data-fallback="' + fileUrl + '">';
     return '<div class="tile" data-index="' + i + '">' +
       '<button class="tile-star' + (starred ? ' starred' : '') + '" data-path="' + escapeHtml(item.path) + '">' + (starred ? '★' : '☆') + '</button>' +
@@ -216,30 +250,23 @@
 
       if (item.type === 'video') {
         var video = tile.querySelector('video');
-        tile.addEventListener('mouseenter', function () { video.play().catch(function () {}); });
-        tile.addEventListener('mouseleave', function () { video.pause(); video.currentTime = 0; });
-        loadVideoDuration(tile, item);
+        tile.addEventListener('mouseenter', function () {
+          if (video && !video.src) {
+            video.src = video.dataset.src || '';
+            if (video.src) video.load();
+          }
+          if (video) video.play().catch(function () {});
+        });
+        tile.addEventListener('mouseleave', function () {
+          if (!video) return;
+          video.pause();
+          try { video.currentTime = 0; } catch (err) {}
+        });
       }
       tile.addEventListener('click', function () { openLightbox(item); });
     });
   }
 
-  function loadVideoDuration(tile, item) {
-    var probe = document.createElement('video');
-    probe.preload = 'metadata';
-    probe.muted = true;
-    probe.src = '/files/' + encodeURIComponent(item.path);
-    probe.addEventListener('loadedmetadata', function () {
-      var dur = probe.duration;
-      if (isFinite(dur)) {
-        var m = Math.floor(dur / 60);
-        var s = Math.floor(dur % 60);
-        var badge = tile.querySelector('[data-dur-badge]');
-        if (badge) badge.textContent = '▶ ' + m + ':' + String(s).padStart(2, '0');
-      }
-      probe.src = '';
-    }, { once: true });
-  }
 
   async function toggleFavorite(filePath) {
     try {

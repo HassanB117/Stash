@@ -449,6 +449,22 @@ button.ghost:hover {
   align-content: start;
 }
 
+.recent-footer {
+  flex-shrink: 0;
+  padding: 0 28px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.recent-footer .ghost {
+  min-width: 140px;
+}
+.recent-count {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 2px;
+}
+
 .tile {
   position: relative;
   aspect-ratio: 16/10;

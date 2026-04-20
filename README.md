@@ -93,3 +93,19 @@ That said: don't expose it to the public internet without a tunnel or reverse pr
 ## License
 
 MIT
+
+## Proxy / tunnel note
+
+If you run stash behind Cloudflare Tunnel or another reverse proxy, set:
+
+```bash
+TRUST_PROXY=1
+```
+
+Thumbnail pre-generation is off by default. Enable it only if you really want startup work:
+
+```bash
+PREGENERATE_THUMBS=1
+PREGENERATE_THUMBS_LIMIT=50
+```
+

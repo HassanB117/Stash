@@ -12,6 +12,16 @@ let sharp; try { sharp = require('sharp'); } catch {}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+function getTrustProxySetting() {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw === '') return 1;
+  const lower = String(raw).trim().toLowerCase();
+  if (['false', '0', 'off', 'no'].includes(lower)) return false;
+  if (['true', 'on', 'yes'].includes(lower)) return true;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : 1;
+}
+app.set('trust proxy', getTrustProxySetting());
 const DATA_DIR = path.join(__dirname, 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SHARES_FILE = path.join(DATA_DIR, 'shares.json');
@@ -20,6 +30,22 @@ const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov']);
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const CAPTURE_CACHE_TTL = Number(process.env.CAPTURE_CACHE_TTL || 5000);
+const FILE_META_CACHE_LIMIT = Number(process.env.FILE_META_CACHE_LIMIT || 500);
+const captureCache = {
+  key: '',
+  stamp: 0,
+  value: {},
+};
+const fileMetaCache = new Map();
+
+function pruneFileMetaCache() {
+  while (fileMetaCache.size > FILE_META_CACHE_LIMIT) {
+    const oldestKey = fileMetaCache.keys().next().value;
+    fileMetaCache.delete(oldestKey);
+  }
+}
 
 // --- Config ---
 function loadConfig() {
@@ -104,9 +130,10 @@ app.use(session({
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  limit: 5,
   message: { error: 'Too many login attempts. Try again in 15 minutes.' },
-  standardHeaders: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
 });
 
 // --- Helpers ---
@@ -132,10 +159,7 @@ function requireSetupNotDone(req, res, next) {
   next();
 }
 
-function scanCaptures() {
-  const cfg = loadConfig();
-  if (!cfg) return {};
-  const capturesDir = path.resolve(cfg.capturesPath);
+function scanCapturesFromDir(capturesDir) {
   if (!fs.existsSync(capturesDir)) return {};
 
   const result = {};
@@ -162,7 +186,24 @@ function scanCaptures() {
   return result;
 }
 
+function getCapturesSnapshot(force = false) {
+  const cfg = loadConfig();
+  if (!cfg) return {};
+  const capturesDir = path.resolve(cfg.capturesPath);
+  const key = capturesDir;
+  const now = Date.now();
+  if (!force && captureCache.key === key && (now - captureCache.stamp) < CAPTURE_CACHE_TTL) {
+    return captureCache.value;
+  }
+  const value = scanCapturesFromDir(capturesDir);
+  captureCache.key = key;
+  captureCache.stamp = now;
+  captureCache.value = value;
+  return value;
+}
+
 // --- Routes ---
+
 app.get('/', (req, res) => {
   if (!isConfigured()) return res.redirect('/setup');
   if (!req.session.authed) return res.redirect('/login');
@@ -210,6 +251,9 @@ app.post('/api/setup/complete', requireSetupNotDone, async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 12);
   const sessionSecret = crypto.randomBytes(64).toString('hex');
+  captureCache.stamp = 0;
+  captureCache.key = '';
+  captureCache.value = {};
   saveConfig({
     username: username.trim(),
     passwordHash,
@@ -242,7 +286,7 @@ app.post('/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
-app.get('/api/captures', requireAuth, (req, res) => res.json(scanCaptures()));
+app.get('/api/captures', requireAuth, (req, res) => res.json(getCapturesSnapshot()));
 
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = loadConfig();
@@ -260,6 +304,9 @@ app.post('/api/config/path', requireAuth, (req, res) => {
     const cfg = loadConfig();
     cfg.capturesPath = resolved;
     saveConfig(cfg);
+    captureCache.stamp = 0;
+    captureCache.key = '';
+    captureCache.value = {};
     res.json({ ok: true, capturesPath: resolved });
   } catch {
     res.status(400).json({ error: 'cannot access folder' });
@@ -315,29 +362,42 @@ app.get('/api/file-meta', requireAuth, async (req, res) => {
   if (!relPath) return res.status(400).json({ error: 'no path' });
   const fullPath = sanitizeRelPath(relPath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).json({ error: 'not found' });
-  const stat = fs.statSync(fullPath);
-  const bytes = stat.size;
-  const size = bytes < 1024 * 1024
-    ? (bytes / 1024).toFixed(1) + ' KB'
-    : (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  const ext = path.extname(relPath).toLowerCase();
-  const meta = { size };
-  if (VIDEO_EXT.has(ext)) {
-    try {
-      const dur = await getVideoDuration(fullPath);
-      if (dur != null) {
-        const m = Math.floor(dur / 60);
-        const s = Math.floor(dur % 60);
-        meta.duration = m + ':' + String(s).padStart(2, '0');
-      }
-    } catch {}
-  } else if (sharp) {
-    try {
-      const info = await getImageMeta(fullPath);
-      if (info) meta.dimensions = info.width + '×' + info.height;
-    } catch {}
+
+  try {
+    const stat = fs.statSync(fullPath);
+    const cacheKey = `${fullPath}:${stat.mtimeMs}:${stat.size}`;
+    const cached = fileMetaCache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    const bytes = stat.size;
+    const size = bytes < 1024 * 1024
+      ? (bytes / 1024).toFixed(1) + ' KB'
+      : (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    const ext = path.extname(relPath).toLowerCase();
+    const meta = { size };
+
+    if (VIDEO_EXT.has(ext)) {
+      try {
+        const dur = await getVideoDuration(fullPath);
+        if (dur != null) {
+          const m = Math.floor(dur / 60);
+          const s = Math.floor(dur % 60);
+          meta.duration = m + ':' + String(s).padStart(2, '0');
+        }
+      } catch {}
+    } else if (sharp) {
+      try {
+        const info = await getImageMeta(fullPath);
+        if (info) meta.dimensions = info.width + '×' + info.height;
+      } catch {}
+    }
+
+    fileMetaCache.set(cacheKey, meta);
+    pruneFileMetaCache();
+    res.json(meta);
+  } catch {
+    res.status(500).json({ error: 'failed to read metadata' });
   }
-  res.json(meta);
 });
 
 function getVideoDuration(filePath) {
@@ -426,5 +486,11 @@ app.listen(PORT, () => {
   }
   console.log('  └─────────────────────────────────────────────┘');
   console.log('');
-  if (isConfigured()) pregenerate(scanCaptures(), sanitizeRelPath);
+
+  // Thumbnail pre-generation is opt-in so large libraries do not get
+  // hammered on startup. The UI generates thumbnails on demand.
+  if (isConfigured() && process.env.PREGENERATE_THUMBS === '1') {
+    const limit = Number.parseInt(process.env.PREGENERATE_THUMBS_LIMIT || '80', 10);
+    pregenerate(getCapturesSnapshot(true), sanitizeRelPath, Number.isFinite(limit) && limit > 0 ? limit : 80);
+  }
 });
