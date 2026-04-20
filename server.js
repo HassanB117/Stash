@@ -426,11 +426,5 @@ app.listen(PORT, () => {
   }
   console.log('  └─────────────────────────────────────────────┘');
   console.log('');
-
-  // Thumbnail pre-generation is opt-in so large libraries do not get
-  // hammered on startup. The UI generates thumbnails on demand.
-  if (isConfigured() && process.env.PREGENERATE_THUMBS === '1') {
-    const limit = Number.parseInt(process.env.PREGENERATE_LIMIT || '80', 10);
-    pregenerate(scanCaptures(), sanitizeRelPath, Number.isFinite(limit) && limit > 0 ? limit : 80);
-  }
+  if (isConfigured()) pregenerate(scanCaptures(), sanitizeRelPath);
 });

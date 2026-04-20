@@ -69,23 +69,14 @@ async function ensureThumb(relPath, fullSrcPath, isVideo) {
   return dest;
 }
 
-function pregenerate(capturesMap, sanitizeFn, limit = Infinity) {
-  if (!Number.isFinite(limit) || limit <= 0) return;
+function pregenerate(capturesMap, sanitizeFn) {
   setImmediate(async () => {
-    let generated = 0;
     for (const files of Object.values(capturesMap)) {
       for (const file of files) {
-        if (generated >= limit) {
-          console.log(`  [thumbs] pre-generation capped at ${limit} thumbnails`);
-          return;
-        }
         if (fs.existsSync(thumbAbsPath(file.path))) continue;
         const src = sanitizeFn(file.path);
         if (!src) continue;
-        try {
-          await ensureThumb(file.path, src, file.type === 'video');
-          generated += 1;
-        } catch {}
+        try { await ensureThumb(file.path, src, file.type === 'video'); } catch {}
       }
     }
     console.log('  [thumbs] pre-generation complete');
