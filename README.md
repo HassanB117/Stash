@@ -1,62 +1,36 @@
 # stash
 
-A dead-simple, self-hosted gallery for your game captures.
-Point it at a folder → get a clean web UI → share clips with disposable links.
+A dead-simple, self-hosted gallery for your game captures. Point it at a folder, get a clean web UI, share clips with friends via disposable links. That's it.
 
-**No uploads. No database. No cloud.**
-Your files stay on your machine — stash just reads them.
+No uploads. No database. No cloud. Your files stay on your machine — stash just reads them.
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ---
 
-## ✨ What it does
+## Why
 
-* 📂 Turns your capture folders into a clean gallery
-* 🎮 One folder = one game
-* 🔗 Share any file with a temporary link (24h expiry)
-* ⚡ Instant setup — no config files, no build step
-* 🔒 Local-first: nothing leaves your machine unless *you* share it
+Screenshot and clip folders turn into a graveyard. OS file explorers are ugly. Discord compresses your stuff into oblivion. Cloud services want your soul. Stash just shows your captures in a decent gallery and lets you share a single file with a link that dies in 24 hours.
 
----
-
-## 🤔 Why
-
-Screenshot folders turn into a graveyard.
-File explorers are clunky.
-Discord compresses everything into mush.
-Cloud services want accounts, uploads, and your patience.
-
-**stash just works:**
-
-> Browse your captures locally and share a clip in seconds.
-
----
-
-## 🚀 Quick start
+## Quick start
 
 ```bash
 npm install
 npm start
 ```
 
-Open:
-`http://localhost:3000`
+Open `http://localhost:3000`. The setup wizard asks for three things:
 
-The setup wizard asks for:
+1. A username
+2. A password (8+ chars)
+3. The path to your captures folder
 
-1. Username
-2. Password (8+ chars)
-3. Path to your captures folder
+Done. No config files to edit.
 
-Done.
+## Folder layout
 
----
-
-## 📁 Folder layout
-
-One subfolder per game:
+One subfolder per game. Stash scans the top level and treats each folder as a gallery:
 
 ```
 D:/Captures/
@@ -69,105 +43,53 @@ D:/Captures/
     └── radiance.webm
 ```
 
-* New files appear on refresh
-* Sorted newest-first (by modified time)
+Drop new files in whenever. Refresh the page, they show up. Files are sorted newest-first by modified time.
 
-**Supported formats:**
-`jpg` `jpeg` `png` `webp` `gif` `mp4` `webm` `mov`
+**Supported:** `jpg` `jpeg` `png` `webp` `gif` `mp4` `webm` `mov`
 
----
+## Sharing clips
 
-## 🔗 Sharing
+Open any capture → hit **share** → copy the link. The recipient doesn't need an account. Link self-destructs after 24 hours.
 
-Open any capture → hit **share** → copy link.
-No account needed for the recipient.
-
-* Links expire automatically after **24 hours**
-* Each link is scoped to a single file
-
-### 🌐 Sharing outside your network
-
-Use Cloudflare Tunnel (no port forwarding needed):
+To share outside your home network, the easiest route is Cloudflare Tunnel (free, no port forwarding, no static IP needed):
 
 ```bash
+# install cloudflared first: https://github.com/cloudflare/cloudflared/releases
 cloudflared tunnel --url http://localhost:3000
 ```
 
-You’ll get a `*.trycloudflare.com` URL.
+You'll get a `*.trycloudflare.com` URL. Share links work through it.
 
-> If running behind HTTPS, set `NODE_ENV=production` to enable secure cookies.
+> When running behind HTTPS in production, set `NODE_ENV=production` so session cookies are marked secure.
 
----
+## Settings
 
-## ⚙️ Settings
+Click **settings** in the top bar to change your password or swap the captures folder. No need to touch files.
 
-Use the **Settings** page to:
+## Resetting
 
-* Change password
-* Switch capture folder
+Delete `data/config.json` and restart. The setup wizard runs again.
 
-No manual config editing needed.
+## Security
 
----
+Not a toy — this actually has decent hygiene:
 
-## ♻️ Reset
+- Passwords hashed with **bcrypt** (cost 12)
+- Login rate-limited (5 attempts / 15 min / IP)
+- Session cookies `httpOnly` + `sameSite=lax`
+- **Helmet** with a strict CSP (no inline scripts)
+- Path traversal blocked via resolved-path checks
+- No upload endpoint exists — captures can only appear via the filesystem
+- Share tokens are 256-bit random, single-file scoped, auto-expiring
 
-Delete:
+That said: don't expose it to the public internet without a tunnel or reverse proxy with HTTPS.
 
-```
-data/config.json
-```
+## Stack
 
-Then restart — setup wizard will run again.
+- Node + Express
+- Plain HTML/CSS/vanilla JS frontend (no build step, no framework)
+- JSON files for config and share tokens (no database)
 
----
-
-## 🔒 Security
-
-This isn’t just thrown together — it has solid basics:
-
-* Passwords hashed with **bcrypt** (cost 12)
-* Login rate limiting (5 attempts / 15 min / IP)
-* Session cookies: `httpOnly`, `sameSite=lax`
-* **Helmet** with strict CSP (no inline scripts)
-* Path traversal protection
-* No upload endpoint (filesystem-only access)
-* Share tokens:
-
-  * 256-bit random
-  * Single-file scoped
-  * Auto-expiring
-
-> ⚠️ Don’t expose directly to the public internet without HTTPS (use a tunnel or reverse proxy).
-
----
-
-## 🧱 Stack
-
-* Node.js + Express
-* Vanilla HTML/CSS/JS (no framework, no build step)
-* JSON storage (no database)
-
----
-
-## 🧠 Philosophy
-
-* Keep it simple
-* Avoid unnecessary dependencies
-* Local-first always
-* Fast startup > feature bloat
-
----
-
-## 🛣️ Roadmap (maybe)
-
-* Auto-cleanup for expired shares
-* Smarter folder indexing / caching
-* Faster thumbnail generation
-* Docker support
-
----
-
-## 📜 License
+## License
 
 MIT
