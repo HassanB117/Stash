@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stash</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- ── Topbar ─────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-brand">
+      <div class="topbar-logo">STASH</div>
+      <div class="topbar-info">
+        <div class="title" id="hello">captures</div>
+        <div class="subtitle" id="folderLabel"></div>
+      </div>
+    </div>
+
+    <div class="topbar-tabs">
+      <button class="tab-btn active" id="tabRecent">
+        RECENT <span class="tab-count" id="recentCount">0</span>
+      </button>
+      <button class="tab-btn" id="tabGames">
+        GAMES <span class="tab-count" id="gamesCount">0</span>
+      </button>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="status-live">
+        <div class="status-dot"></div>
+        LIVE
+      </div>
+      <button type="button" class="ghost" id="settingsBtn">SETTINGS</button>
+      <button type="button" class="ghost" id="logoutBtn">LOGOUT</button>
+    </div>
+  </header>
+
+  <!-- Hidden filters nav — kept so app.js renderFilters() doesn't error -->
+  <nav class="filters" id="filters"></nav>
+
+  <!-- ── RECENT tab panel ───────────────────────────────────────────── -->
+  <div class="tab-panel active" id="panelRecent">
+    <main class="grid" id="grid"></main>
+  </div>
+
+  <!-- ── GAMES tab panel ───────────────────────────────────────────── -->
+  <div class="tab-panel" id="panelGames">
+
+    <!-- Game library view -->
+    <div id="gamesLibrary" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+      <div class="games-header">
+        <div class="games-search-wrap">
+          <span class="games-search-icon">⌕</span>
+          <input type="text" class="games-search" id="gamesSearch" placeholder="search games..." autocomplete="off" spellcheck="false">
+        </div>
+        <div class="games-count" id="gamesCountLabel"></div>
+      </div>
+      <div class="games-grid-wrap" id="gamesGrid"></div>
+    </div>
+
+    <!-- Game drill-down view (hidden until a game is selected) -->
+    <div id="gameDrilldown" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+      <div class="drilldown-bar">
+        <button class="drilldown-back" id="backToGames">← GAMES</button>
+        <div class="drilldown-sep"></div>
+        <div class="drilldown-title" id="drilldownTitle"></div>
+        <div class="drilldown-count" id="drilldownCount"></div>
+      </div>
+      <main class="grid" id="drilldownGrid"></main>
+    </div>
+
+  </div>
+
+  <!-- ── Lightbox ──────────────────────────────────────────────────── -->
+  <div class="lightbox" id="lightbox">
+    <div class="lb-controls">
+      <button type="button" class="lb-share" id="lbShare">⤴ EXFIL LINK</button>
+      <button type="button" class="lb-close" id="lbClose">×</button>
+    </div>
+    <div class="lb-content" id="lbContent"></div>
+    <div class="lb-meta" id="lbMeta" style="display:none;">
+      <span class="lb-meta-game" id="lbGame"></span>
+      <div class="lb-meta-sep"></div>
+      <span class="lb-meta-name" id="lbName"></span>
+      <div class="lb-meta-sep"></div>
+      <span class="lb-meta-date" id="lbDate"></span>
+    </div>
+  </div>
+
+  <!-- ── Share modal ───────────────────────────────────────────────── -->
+  <div class="modal" id="shareModal">
+    <div class="modal-card">
+      <div class="modal-title">EXFIL LINK</div>
+      <div class="modal-sub">EXPIRES IN 24 HOURS · READ-ONLY</div>
+      <input type="text" id="shareUrl" readonly>
+      <div class="modal-actions">
+        <button type="button" id="copyBtn">⊕ COPY</button>
+        <button type="button" class="ghost" id="shareClose">CLOSE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Settings modal ────────────────────────────────────────────── -->
+  <div class="modal" id="settingsModal">
+    <div class="modal-card">
+      <div class="modal-title">SYSTEM CONFIG</div>
+      <div class="modal-sub">// SETTINGS</div>
+
+      <div class="settings-section">
+        <label for="folderInput">// CAPTURE PATH</label>
+        <input type="text" id="folderInput" spellcheck="false" autocomplete="off">
+        <div class="modal-actions">
+          <button type="button" id="saveFolderBtn">UPDATE</button>
+        </div>
+        <div class="settings-msg" id="folderMsg"></div>
+      </div>
+
+      <div class="settings-section">
+        <label>// CHANGE PASSWORD</label>
+        <input type="password" id="currentPass" placeholder="current password" autocomplete="current-password">
+        <input type="password" id="newPass" placeholder="new password (8+ chars)" autocomplete="new-password">
+        <div class="modal-actions">
+          <button type="button" id="savePassBtn">CHANGE</button>
+        </div>
+        <div class="settings-msg" id="passMsg"></div>
+      </div>
+
+      <div class="modal-actions" style="margin-top:20px;">
+        <button type="button" class="ghost" id="settingsClose">CLOSE</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

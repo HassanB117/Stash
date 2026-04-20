@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stash</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="centered">
+
+  <div style="text-align:center;margin-bottom:32px;">
+    <div style="font-family:var(--display);font-size:44px;font-weight:700;letter-spacing:8px;color:var(--accent);text-shadow:0 0 30px rgba(0,212,255,0.6),0 0 60px rgba(0,212,255,0.2);">STASH</div>
+    <div style="font-size:9px;color:var(--text-dim);letter-spacing:4px;margin-top:4px;">CAPTURE ARCHIVE v2.0</div>
+  </div>
+
+  <form id="loginForm" class="login-card">
+    <div style="font-size:10px;color:var(--text-dim);letter-spacing:3px;margin-bottom:8px;">// AUTHENTICATE</div>
+    <input type="text" id="username" placeholder="username" autocomplete="username" autofocus required>
+    <input type="password" id="password" placeholder="password" autocomplete="current-password" required>
+    <button type="submit">ACCESS SYSTEM</button>
+    <div class="error" id="error"></div>
+    <div style="text-align:center;margin-top:4px;">
+      <a href="/setup" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;text-decoration:none;transition:color 0.15s;"
+        onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-dim)'">
+        FIRST RUN → SETUP
+      </a>
+    </div>
+  </form>
+
+  <div style="margin-top:16px;font-size:9px;color:var(--text-dim);letter-spacing:3px;" id="sysTime"></div>
+
+  <script src="/login.js"></script>
+  <script>
+    // Live clock
+    function updateTime() {
+      const el = document.getElementById('sysTime');
+      if (el) el.textContent = 'SYSTEM ONLINE · ' + new Date().toUTCString().slice(0,16).toUpperCase();
+    }
+    updateTime();
+    setInterval(updateTime, 1000);
+  </script>
+</body>
+</html>

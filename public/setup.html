@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>setup · stash</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="centered">
+
+  <div style="text-align:center;margin-bottom:28px;">
+    <div style="font-family:var(--display);font-size:32px;font-weight:700;letter-spacing:6px;color:var(--accent);text-shadow:0 0 20px rgba(0,212,255,0.4);">STASH</div>
+    <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-top:4px;">INITIAL CONFIGURATION</div>
+  </div>
+
+  <div class="wizard">
+
+    <div class="steps">
+      <div class="step active current" data-step="1">01 · ACCOUNT</div>
+      <div class="step" data-step="2">02 · FOLDER</div>
+      <div class="step" data-step="3">03 · DONE</div>
+    </div>
+
+    <!-- Step 1: Account -->
+    <div class="step-panel active" id="panel-1">
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-bottom:4px;">// CREATE ACCOUNT</div>
+      <div class="field">
+        <label for="username">username</label>
+        <input type="text" id="username" autocomplete="username" placeholder="e.g. player_one">
+      </div>
+      <div class="field">
+        <label for="password">password</label>
+        <input type="password" id="password" autocomplete="new-password" placeholder="at least 8 characters">
+      </div>
+      <div class="field">
+        <label for="passwordConfirm">confirm password</label>
+        <input type="password" id="passwordConfirm" autocomplete="new-password">
+      </div>
+      <div class="error" id="error-1"></div>
+      <button type="button" class="primary" id="next-1">NEXT →</button>
+    </div>
+
+    <!-- Step 2: Folder -->
+    <div class="step-panel" id="panel-2">
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-bottom:4px;">// SET CAPTURE PATH</div>
+      <div class="field">
+        <label for="folderPath">captures folder path</label>
+        <input type="text" id="folderPath" placeholder="C:\Users\YourName\Videos\Captures" spellcheck="false" autocomplete="off">
+        <div class="hint">paste the full path to your captures folder.<br>each subfolder = one game in your archive.</div>
+      </div>
+      <div class="folder-status" id="folderStatus"></div>
+      <div class="error" id="error-2"></div>
+      <div class="actions">
+        <button type="button" class="ghost" id="back-2">← BACK</button>
+        <button type="button" class="primary" id="next-2">INITIALIZE →</button>
+      </div>
+    </div>
+
+    <!-- Step 3: Done -->
+    <div class="step-panel" id="panel-3">
+      <div class="success-icon">✓</div>
+      <div class="success-msg">SYSTEM READY</div>
+      <div class="success-sub">archive initialized</div>
+      <button type="button" class="primary" id="goLogin">ENTER ARCHIVE →</button>
+    </div>
+
+  </div>
+
+  <script src="/setup.js"></script>
+</body>
+</html>
