@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>stash · shared capture</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .share-wrap { max-width: 900px; width: 100%; }
+  .share-wrap img, .share-wrap video { width: 100%; border-radius: 4px; display: block; }
+  .share-meta { margin-top: 12px; font-size: 10px; letter-spacing: 2px; color: var(--text-dim); display: flex; justify-content: space-between; }
+  .share-expiry { font-size: 9px; color: var(--text-dim); letter-spacing: 2px; margin-top: 6px; }
+</style>
+</head>
+<body class="centered">
+  <div style="text-align:center;margin-bottom:24px">
+    <div style="font-family:var(--display);font-size:32px;font-weight:700;letter-spacing:6px;color:var(--accent);text-shadow:0 0 20px rgba(0,212,255,0.4);">STASH</div>
+    <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-top:4px;">SHARED CAPTURE</div>
+  </div>
+  <div class="share-wrap" id="content">
+    <div style="font-size:10px;letter-spacing:3px;color:var(--text-dim);">// LOADING...</div>
+  </div>
+  <script>
+    (async function () {
+      var token = location.pathname.split('/')[2];
+      var el    = document.getElementById('content');
+      try {
+        var res  = await fetch('/s/' + token + '/meta');
+        if (!res.ok) { location.href = '/s/' + token; return; }
+        var meta = await res.json();
+        var src  = '/s/' + token + '/file';
+        var expires = new Date(meta.expiresAt).toLocaleString();
+        var media = meta.type === 'video'
+          ? '<video src="' + src + '" controls autoplay></video>'
+          : '<img src="' + src + '" alt="' + meta.name + '">';
+        el.innerHTML = media +
+          '<div class="share-meta"><span>' + meta.name + '</span></div>' +
+          '<div class="share-expiry">// LINK EXPIRES ' + expires.toUpperCase() + '</div>';
+        document.title = 'stash · ' + meta.name;
+      } catch {
+        el.innerHTML = '<div style="font-size:10px;letter-spacing:3px;color:var(--text-dim);">// FAILED TO LOAD</div>';
+      }
+    })();
+  </script>
+</body>
+</html>
