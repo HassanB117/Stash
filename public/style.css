@@ -618,6 +618,39 @@ button.ghost:hover {
 .share-footer { margin-top: 16px; font-size: 10px; color: var(--text-dim); letter-spacing: 2px; }
 .loading { color: var(--text-dim); font-size: 12px; padding: 40px; letter-spacing: 3px; }
 
+/* ── Tile star button ── */
+.tile-star {
+  position: absolute; top: 7px; left: 7px;
+  background: rgba(0,0,0,0.65);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: rgba(255,255,255,0.35);
+  font-size: 12px; padding: 2px 6px;
+  cursor: pointer; z-index: 2;
+  transition: all 0.15s;
+  opacity: 0;
+  clip-path: none;
+  line-height: 1;
+}
+.tile:hover .tile-star { opacity: 1; }
+.tile-star.starred { color: #ffd700; border-color: rgba(255,215,0,0.5); opacity: 1; }
+.tile-star:hover { color: #ffd700; background: rgba(0,0,0,0.8); }
+
+/* ── Lightbox star button ── */
+.lb-star {
+  height: 36px; padding: 0 16px; font-size: 11px; letter-spacing: 0.08em;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #fff; cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--mono);
+}
+.lb-star:hover { background: rgba(255,255,255,0.15); }
+.lb-star.starred { color: #ffd700; border-color: rgba(255,215,0,0.35); background: rgba(255,215,0,0.07); }
+
+/* ── Lightbox detail meta ── */
+.lb-meta-detail { color: var(--text-dim); font-size: 10px; }
+
 /* ── Expired page ── */
 .expired-card {
   background: var(--surface); border: 1px solid var(--border);

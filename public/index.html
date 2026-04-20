@@ -25,6 +25,9 @@
       <button class="tab-btn" id="tabGames">
         GAMES <span class="tab-count" id="gamesCount">0</span>
       </button>
+      <button class="tab-btn" id="tabStarred">
+        STARRED <span class="tab-count" id="starredCount">0</span>
+      </button>
     </div>
 
     <div class="topbar-actions">
@@ -43,6 +46,11 @@
   <!-- ── RECENT tab panel ───────────────────────────────────────────── -->
   <div class="tab-panel active" id="panelRecent">
     <main class="grid" id="grid"></main>
+  </div>
+
+  <!-- ── STARRED tab panel ─────────────────────────────────────────── -->
+  <div class="tab-panel" id="panelStarred">
+    <main class="grid" id="starredGrid"></main>
   </div>
 
   <!-- ── GAMES tab panel ───────────────────────────────────────────── -->
@@ -76,6 +84,7 @@
   <!-- ── Lightbox ──────────────────────────────────────────────────── -->
   <div class="lightbox" id="lightbox">
     <div class="lb-controls">
+      <button type="button" class="lb-star" id="lbStar">☆ STAR</button>
       <button type="button" class="lb-share" id="lbShare">⤴ EXFIL LINK</button>
       <button type="button" class="lb-close" id="lbClose">×</button>
     </div>
@@ -86,6 +95,8 @@
       <span class="lb-meta-name" id="lbName"></span>
       <div class="lb-meta-sep"></div>
       <span class="lb-meta-date" id="lbDate"></span>
+      <div class="lb-meta-sep" id="lbMetaSep2" style="display:none"></div>
+      <span class="lb-meta-detail" id="lbDetail" style="display:none"></span>
     </div>
   </div>
 
@@ -115,6 +126,15 @@
           <button type="button" id="saveFolderBtn">UPDATE</button>
         </div>
         <div class="settings-msg" id="folderMsg"></div>
+      </div>
+
+      <div class="settings-section">
+        <label for="siteUrlInput">// SITE URL</label>
+        <input type="text" id="siteUrlInput" placeholder="https://stash.example.com" spellcheck="false" autocomplete="off">
+        <div class="modal-actions">
+          <button type="button" id="saveSiteUrlBtn">UPDATE</button>
+        </div>
+        <div class="settings-msg" id="siteUrlMsg"></div>
       </div>
 
       <div class="settings-section">

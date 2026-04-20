@@ -6,12 +6,16 @@ const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
+const { ensureThumb, pregenerate, getImageMeta } = require('./thumbs');
+let sharp; try { sharp = require('sharp'); } catch {}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SHARES_FILE = path.join(DATA_DIR, 'shares.json');
+const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
 const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mov']);
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov']);
 
@@ -33,6 +37,13 @@ function getSessionSecret() {
   if (cfg && cfg.sessionSecret) return cfg.sessionSecret;
   return crypto.randomBytes(32).toString('hex');
 }
+
+// --- Favorites ---
+function loadFavorites() {
+  try { return JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf8')); }
+  catch { return []; }
+}
+function saveFavorites(arr) { fs.writeFileSync(FAVORITES_FILE, JSON.stringify(arr)); }
 
 // --- Shares ---
 function loadShares() {
@@ -235,7 +246,7 @@ app.get('/api/captures', requireAuth, (req, res) => res.json(scanCaptures()));
 
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = loadConfig();
-  res.json({ username: cfg.username, capturesPath: cfg.capturesPath });
+  res.json({ username: cfg.username, capturesPath: cfg.capturesPath, siteUrl: cfg.siteUrl || '' });
 });
 
 app.post('/api/config/path', requireAuth, (req, res) => {
@@ -255,6 +266,21 @@ app.post('/api/config/path', requireAuth, (req, res) => {
   }
 });
 
+app.post('/api/config/url', requireAuth, (req, res) => {
+  let { siteUrl } = req.body;
+  if (siteUrl && typeof siteUrl === 'string' && siteUrl.trim()) {
+    siteUrl = siteUrl.trim().replace(/\/$/, '');
+    try { new URL(siteUrl); } catch { return res.status(400).json({ error: 'invalid URL' }); }
+    if (!siteUrl.startsWith('http')) return res.status(400).json({ error: 'URL must start with http' });
+  } else {
+    siteUrl = '';
+  }
+  const cfg = loadConfig();
+  cfg.siteUrl = siteUrl;
+  saveConfig(cfg);
+  res.json({ ok: true, siteUrl });
+});
+
 app.post('/api/config/password', requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const cfg = loadConfig();
@@ -269,11 +295,89 @@ app.post('/api/config/password', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/favorites', requireAuth, (req, res) => res.json(loadFavorites()));
+
+app.post('/api/favorites/toggle', requireAuth, (req, res) => {
+  const { filePath } = req.body;
+  if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'bad request' });
+  if (!sanitizeRelPath(filePath)) return res.status(400).json({ error: 'invalid path' });
+  const favs = loadFavorites();
+  const idx = favs.indexOf(filePath);
+  const starred = idx === -1;
+  if (starred) favs.push(filePath);
+  else favs.splice(idx, 1);
+  saveFavorites(favs);
+  res.json({ starred });
+});
+
+app.get('/api/file-meta', requireAuth, async (req, res) => {
+  const relPath = req.query.path;
+  if (!relPath) return res.status(400).json({ error: 'no path' });
+  const fullPath = sanitizeRelPath(relPath);
+  if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).json({ error: 'not found' });
+  const stat = fs.statSync(fullPath);
+  const bytes = stat.size;
+  const size = bytes < 1024 * 1024
+    ? (bytes / 1024).toFixed(1) + ' KB'
+    : (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  const ext = path.extname(relPath).toLowerCase();
+  const meta = { size };
+  if (VIDEO_EXT.has(ext)) {
+    try {
+      const dur = await getVideoDuration(fullPath);
+      if (dur != null) {
+        const m = Math.floor(dur / 60);
+        const s = Math.floor(dur % 60);
+        meta.duration = m + ':' + String(s).padStart(2, '0');
+      }
+    } catch {}
+  } else if (sharp) {
+    try {
+      const info = await getImageMeta(fullPath);
+      if (info) meta.dimensions = info.width + '×' + info.height;
+    } catch {}
+  }
+  res.json(meta);
+});
+
+function getVideoDuration(filePath) {
+  return new Promise((resolve, reject) => {
+    execFile('ffprobe', [
+      '-v', 'quiet', '-print_format', 'json',
+      '-show_format', '-show_streams', filePath,
+    ], { timeout: 10000 }, (err, stdout) => {
+      if (err) return reject(err);
+      try {
+        const data = JSON.parse(stdout);
+        const dur = parseFloat(
+          (data.format && data.format.duration) ||
+          (data.streams && data.streams.find(s => s.codec_type === 'video') || {}).duration
+        );
+        resolve(isNaN(dur) ? null : dur);
+      } catch { reject(new Error('parse error')); }
+    });
+  });
+}
+
 app.get('/files/*', requireAuth, (req, res) => {
   const relPath = decodeURIComponent(req.params[0]);
   const fullPath = sanitizeRelPath(relPath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
   res.sendFile(fullPath);
+});
+
+app.get('/thumb/*', requireAuth, async (req, res) => {
+  const relPath = decodeURIComponent(req.params[0]);
+  const fullSrcPath = sanitizeRelPath(relPath);
+  if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
+  const ext = path.extname(relPath).toLowerCase();
+  const isVideo = VIDEO_EXT.has(ext);
+  try {
+    const dest = await ensureThumb(relPath, fullSrcPath, isVideo);
+    res.sendFile(dest);
+  } catch {
+    res.status(404).send('thumbnail not available');
+  }
 });
 
 app.post('/api/share', requireAuth, (req, res) => {
@@ -322,4 +426,5 @@ app.listen(PORT, () => {
   }
   console.log('  └─────────────────────────────────────────────┘');
   console.log('');
+  if (isConfigured()) pregenerate(scanCaptures(), sanitizeRelPath);
 });
