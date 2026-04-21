@@ -39,6 +39,13 @@
     panelRecent.classList.toggle('active', name === 'recent');
     panelGames.classList.toggle('active', name === 'games');
     panelStarred.classList.toggle('active', name === 'starred');
+    // Sync mobile bottom tabs
+    var mtr = $('mTabRecent');
+    if (mtr) {
+      mtr.classList.toggle('active', name === 'recent');
+      $('mTabGames').classList.toggle('active', name === 'games');
+      $('mTabStarred').classList.toggle('active', name === 'starred');
+    }
     if (name === 'games') showLibrary();
     if (name === 'starred') renderStarredGrid();
   }
@@ -85,7 +92,6 @@
     $('hello').textContent = cfg.username + "'s archive";
     $('folderLabel').textContent = cfg.capturesPath;
     $('folderInput').value = cfg.capturesPath;
-    $('siteUrlInput').value = siteUrl;
   }
 
   async function loadFavorites() {
@@ -111,6 +117,13 @@
     $('recentCount').textContent = total;
     $('gamesCount').textContent  = games.length;
     $('starredCount').textContent = favorites.size;
+    // Mobile tab badges
+    var mbr = $('mBadgeRecent');
+    if (mbr) {
+      mbr.textContent = total || '';
+      $('mBadgeGames').textContent   = games.length || '';
+      $('mBadgeStarred').textContent = favorites.size || '';
+    }
   }
 
   function escapeHtml(s) {
@@ -213,12 +226,13 @@
 
   // ── Shared tile renderer ──────────────────────────────────────────────
   function renderTileHTML(item, i) {
-    var fileUrl  = '/files/' + encodeURIComponent(item.path);
-    var thumbUrl = '/thumb/' + encodeURIComponent(item.path);
-    var date     = formatDate(item.mtime);
-    var starred  = favorites.has(item.path);
-    var media    = item.type === 'video'
-      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + fileUrl + '"></video><div class="badge" data-dur-badge>▶ CLIP</div>'
+    var fileUrl    = '/files/'   + encodeURIComponent(item.path);
+    var thumbUrl   = '/thumb/'   + encodeURIComponent(item.path);
+    var previewUrl = '/preview/' + encodeURIComponent(item.path);
+    var date       = formatDate(item.mtime);
+    var starred    = favorites.has(item.path);
+    var media      = item.type === 'video'
+      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + previewUrl + '" data-file="' + fileUrl + '"></video><div class="badge" data-dur-badge>▶ CLIP</div>'
       : '<img src="' + thumbUrl + '" alt="' + escapeHtml(item.name) + '" loading="lazy" data-fallback="' + fileUrl + '">';
     return '<div class="tile" data-index="' + i + '">' +
       '<button class="tile-star' + (starred ? ' starred' : '') + '" data-path="' + escapeHtml(item.path) + '">' + (starred ? '★' : '☆') + '</button>' +
@@ -378,13 +392,169 @@
     });
   }
 
+  // ── Custom video player ───────────────────────────────────────────────
+  function buildVideoPlayer(src) {
+    var wrap = document.createElement('div');
+    wrap.className = 'vplayer';
+
+    var vid = document.createElement('video');
+    vid.className = 'vplayer-video';
+    vid.src = src;
+    vid.preload = 'auto';
+    vid.playsInline = true;
+
+    var pulse = document.createElement('div');
+    pulse.className = 'vplayer-pulse';
+    pulse.innerHTML = '<span>▶</span>';
+
+    var bar = document.createElement('div');
+    bar.className = 'vplayer-bar';
+
+    var btnPlay = document.createElement('button');
+    btnPlay.className = 'vplayer-btn';
+    btnPlay.textContent = '▶';
+
+    var timeEl = document.createElement('span');
+    timeEl.className = 'vplayer-time';
+    timeEl.textContent = '0:00 / 0:00';
+
+    var seekWrap = document.createElement('div');
+    seekWrap.className = 'vplayer-seek';
+    var seekBuf  = document.createElement('div');
+    seekBuf.className  = 'vplayer-seek-buf';
+    var seekFill = document.createElement('div');
+    seekFill.className = 'vplayer-seek-fill';
+    seekWrap.appendChild(seekBuf);
+    seekWrap.appendChild(seekFill);
+
+    var btnMute = document.createElement('button');
+    btnMute.className = 'vplayer-btn';
+    btnMute.textContent = 'VOL';
+
+    var btnFs = document.createElement('button');
+    btnFs.className = 'vplayer-btn';
+    btnFs.textContent = '⛶';
+
+    bar.appendChild(btnPlay);
+    bar.appendChild(timeEl);
+    bar.appendChild(seekWrap);
+    bar.appendChild(btnMute);
+    bar.appendChild(btnFs);
+    wrap.appendChild(vid);
+    wrap.appendChild(pulse);
+    wrap.appendChild(bar);
+
+    var hideTimer = null;
+    var seeking = false;
+
+    function fmt(s) {
+      s = Math.floor(s || 0);
+      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    }
+
+    function reveal() {
+      wrap.classList.remove('vp-hidden');
+      clearTimeout(hideTimer);
+      if (!vid.paused && !vid.ended) {
+        hideTimer = setTimeout(function () { wrap.classList.add('vp-hidden'); }, 3000);
+      }
+    }
+
+    function syncState() {
+      var playing = !vid.paused && !vid.ended;
+      btnPlay.textContent = playing ? '⏸' : '▶';
+      pulse.querySelector('span').textContent = playing ? '⏸' : '▶';
+      wrap.classList.toggle('vp-playing', playing);
+      if (!playing) { clearTimeout(hideTimer); wrap.classList.remove('vp-hidden'); }
+      else reveal();
+    }
+
+    function updateProgress() {
+      var dur = vid.duration || 0;
+      var cur = vid.currentTime;
+      var pct = dur ? (cur / dur * 100) : 0;
+      seekFill.style.width = pct + '%';
+      timeEl.textContent = fmt(cur) + ' / ' + fmt(dur);
+      if (dur && vid.buffered.length) {
+        seekBuf.style.width = (vid.buffered.end(vid.buffered.length - 1) / dur * 100) + '%';
+      }
+    }
+
+    function doSeek(e) {
+      var r   = seekWrap.getBoundingClientRect();
+      var x   = e.clientX !== undefined ? e.clientX : (e.touches ? e.touches[0].clientX : 0);
+      var pct = Math.max(0, Math.min(1, (x - r.left) / r.width));
+      vid.currentTime = pct * (vid.duration || 0);
+      updateProgress();
+    }
+
+    seekWrap.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      seekWrap.setPointerCapture(e.pointerId);
+      seeking = true;
+      doSeek(e);
+      reveal();
+    });
+    seekWrap.addEventListener('pointermove', function (e) {
+      if (seeking) { doSeek(e); }
+    });
+    seekWrap.addEventListener('pointerup', function () { seeking = false; });
+
+    function togglePlay(e) {
+      if (e) e.stopPropagation();
+      reveal();
+      if (vid.paused || vid.ended) vid.play().catch(function () {});
+      else vid.pause();
+    }
+
+    pulse.addEventListener('click', function (e) { e.stopPropagation(); togglePlay(); });
+    vid.addEventListener('click', togglePlay);
+    btnPlay.addEventListener('click', function (e) { e.stopPropagation(); togglePlay(); });
+
+    btnMute.addEventListener('click', function (e) {
+      e.stopPropagation();
+      vid.muted = !vid.muted;
+      btnMute.textContent = vid.muted ? 'MUTE' : 'VOL';
+      reveal();
+    });
+
+    btnFs.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else if (wrap.requestFullscreen) {
+        wrap.requestFullscreen();
+      } else if (vid.webkitEnterFullscreen) {
+        vid.webkitEnterFullscreen();
+      }
+    });
+
+    vid.addEventListener('play',           syncState);
+    vid.addEventListener('pause',          syncState);
+    vid.addEventListener('ended',          syncState);
+    vid.addEventListener('timeupdate',     updateProgress);
+    vid.addEventListener('loadedmetadata', updateProgress);
+
+    wrap.addEventListener('mousemove',  function () { reveal(); });
+    wrap.addEventListener('touchstart', function () { reveal(); }, { passive: true });
+
+    vid.play().catch(function () {});
+    return wrap;
+  }
+
   // ── Lightbox ──────────────────────────────────────────────────────────
   function openLightbox(item) {
     currentItem = item;
     var fileUrl = '/files/' + encodeURIComponent(item.path);
-    lbContent.innerHTML = item.type === 'video'
-      ? '<video src="' + fileUrl + '" controls autoplay></video>'
-      : '<img src="' + fileUrl + '" alt="' + escapeHtml(item.name) + '">';
+    lbContent.innerHTML = '';
+    if (item.type === 'video') {
+      lbContent.appendChild(buildVideoPlayer(fileUrl));
+    } else {
+      var img = document.createElement('img');
+      img.src = fileUrl;
+      img.alt = escapeHtml(item.name);
+      lbContent.appendChild(img);
+    }
 
     $('lbGame').textContent = item.game.toUpperCase();
     $('lbName').textContent = item.name;
@@ -403,6 +573,9 @@
   }
 
   function closeLightbox() {
+    var vid = lbContent.querySelector('.vplayer-video');
+    if (vid) { vid.pause(); vid.src = ''; }
+    if (document.fullscreenElement) document.exitFullscreen();
     lightbox.classList.remove('open');
     lbContent.innerHTML = '';
     lbMeta.style.display = 'none';
@@ -444,6 +617,30 @@
       else if (settingsModal.classList.contains('open')) settingsModal.classList.remove('open');
       else if (lightbox.classList.contains('open'))      closeLightbox();
       else if (currentDrillGame)                         showLibrary();
+      return;
+    }
+    // Video keyboard shortcuts (space/k=play, ←/→=seek ±5s, m=mute, f=fullscreen)
+    if (!lightbox.classList.contains('open') || shareModal.classList.contains('open')) return;
+    var activeTag = document.activeElement && document.activeElement.tagName;
+    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
+    var vid = lbContent.querySelector('.vplayer-video');
+    if (!vid) return;
+    if (e.key === ' ' || e.key === 'k') {
+      e.preventDefault();
+      if (vid.paused || vid.ended) vid.play().catch(function () {}); else vid.pause();
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      vid.currentTime = Math.max(0, vid.currentTime - 5);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      vid.currentTime = Math.min(vid.duration || 0, vid.currentTime + 5);
+    } else if (e.key === 'm' || e.key === 'M') {
+      vid.muted = !vid.muted;
+    } else if (e.key === 'f' || e.key === 'F') {
+      var player = lbContent.querySelector('.vplayer');
+      if (!player) return;
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (player.requestFullscreen) player.requestFullscreen();
     }
   });
 
@@ -478,10 +675,8 @@
   $('settingsBtn').addEventListener('click', function () {
     $('folderMsg').textContent = '';
     $('passMsg').textContent = '';
-    $('siteUrlMsg').textContent = '';
     $('currentPass').value = '';
     $('newPass').value = '';
-    $('siteUrlInput').value = siteUrl;
     settingsModal.classList.add('open');
   });
   $('settingsClose').addEventListener('click', function () { settingsModal.classList.remove('open'); });
@@ -540,39 +735,39 @@
     }
   });
 
-  $('saveSiteUrlBtn').addEventListener('click', async function () {
-    var url = $('siteUrlInput').value.trim();
-    var msg = $('siteUrlMsg');
-    msg.textContent = '';
-    try {
-      var res = await fetch('/api/config/url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteUrl: url }),
-      });
-      var data = await res.json();
-      if (res.ok) {
-        siteUrl = data.siteUrl;
-        msg.textContent = '✓ URL UPDATED';
-        msg.className = 'settings-msg ok';
-      } else {
-        msg.textContent = '✗ ' + (data.error || 'failed');
-        msg.className = 'settings-msg bad';
-      }
-    } catch {
-      msg.textContent = '✗ NETWORK ERROR';
-      msg.className = 'settings-msg bad';
-    }
-  });
-
   $('logoutBtn').addEventListener('click', async function () {
     await fetch('/logout', { method: 'POST' });
     window.location.href = '/login';
   });
 
+  // ── Mobile tab bar ────────────────────────────────────────────────────
+  var mTabRecentEl = $('mTabRecent');
+  if (mTabRecentEl) {
+    mTabRecentEl.addEventListener('click',  function () { setTab('recent'); });
+    $('mTabGames').addEventListener('click',   function () { setTab('games'); });
+    $('mTabStarred').addEventListener('click', function () { setTab('starred'); });
+  }
+
   // ── Init ───────────────────────────────────────────────────────────────
   (async function () {
     await Promise.all([loadConfig(), loadFavorites()]);
     await loadCaptures();
+
+    setInterval(async function () {
+      try {
+        var res = await fetch('/api/captures');
+        if (!res.ok) return;
+        var newCaptures = await res.json();
+        var oldTotal = Object.values(allCaptures).reduce(function (s, a) { return s + a.length; }, 0);
+        var newTotal = Object.values(newCaptures).reduce(function (s, a) { return s + a.length; }, 0);
+        if (newTotal !== oldTotal || Object.keys(newCaptures).length !== Object.keys(allCaptures).length) {
+          allCaptures = newCaptures;
+          renderFilters();
+          renderGrid();
+          updateCounts();
+          renderGamesGrid(Object.keys(allCaptures).sort());
+        }
+      } catch {}
+    }, 30000);
   })();
 })();

@@ -1,6 +1,6 @@
 # stash
 
-A dead-simple, self-hosted gallery for your game captures. Point it at a folder, get a clean web UI, share clips with friends via disposable links. That's it.
+A dead-simple, self-hosted gallery for your game captures. Point it at a folder, get a clean web UI, share clips with friends via disposable links.
 
 No uploads. No database. No cloud. Your files stay on your machine — stash just reads them.
 
@@ -11,7 +11,7 @@ No uploads. No database. No cloud. Your files stay on your machine — stash jus
 
 ## Why
 
-Screenshot and clip folders turn into a graveyard. OS file explorers are ugly. Discord compresses your stuff into oblivion. Cloud services want your soul. Stash just shows your captures in a decent gallery and lets you share a single file with a link that dies in 24 hours.
+Screenshot and clip folders turn into a graveyard. OS file explorers are ugly. Discord compresses everything. Cloud services want your soul. Stash shows your captures in a clean gallery and lets you share a single file via a link that dies in 24 hours.
 
 ## Quick start
 
@@ -23,10 +23,10 @@ npm start
 Open `http://localhost:3000`. The setup wizard asks for three things:
 
 1. A username
-2. A password (8+ chars)
+2. A password (8+ characters)
 3. The path to your captures folder
 
-Done. No config files to edit.
+No config files to edit by hand.
 
 ## Folder layout
 
@@ -43,69 +43,69 @@ D:/Captures/
     └── radiance.webm
 ```
 
-Drop new files in whenever. Refresh the page, they show up. Files are sorted newest-first by modified time.
+Drop new files in at any time — refresh the page and they appear. Files are sorted newest-first by modified time.
 
-**Supported:** `jpg` `jpeg` `png` `webp` `gif` `mp4` `webm` `mov`
+**Supported formats:** `jpg` `jpeg` `png` `webp` `gif` `mp4` `webm` `mov`
 
-## Sharing clips
+## Features
 
-Open any capture → hit **share** → copy the link. The recipient doesn't need an account. Link self-destructs after 24 hours.
+- **Recent / Games / Starred tabs** — browse everything at once, by game, or just your favorites
+- **Lightbox** — full-screen viewer with keyboard navigation
+- **Sharing** — open any capture → hit share → copy the link. Recipients need no account. Link expires in 24 hours
+- **Settings** — change your password or swap the captures folder at any time from the UI
 
-To share outside your home network, the easiest route is Cloudflare Tunnel (free, no port forwarding, no static IP needed):
+## Sharing outside your network
+
+To share links beyond your home network, the easiest option is a Cloudflare Tunnel (free, no port forwarding, no static IP):
 
 ```bash
-# install cloudflared first: https://github.com/cloudflare/cloudflared/releases
+# install cloudflared: https://github.com/cloudflare/cloudflared/releases
 cloudflared tunnel --url http://localhost:3000
 ```
 
 You'll get a `*.trycloudflare.com` URL. Share links work through it.
 
-> When running behind HTTPS in production, set `NODE_ENV=production` so session cookies are marked secure.
+When running behind HTTPS in production, set `NODE_ENV=production` so session cookies are marked secure.
 
-## Settings
+## Environment variables
 
-Click **settings** in the top bar to change your password or swap the captures folder. No need to touch files.
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP port |
+| `NODE_ENV` | — | Set to `production` to mark session cookies secure |
+| `TRUST_PROXY` | `1` | Express trust-proxy setting; set to `false` if not behind a proxy |
+| `CAPTURE_CACHE_TTL` | `5000` | Filesystem scan cache TTL in ms |
+| `FILE_META_CACHE_LIMIT` | `500` | Max entries in the in-memory file metadata LRU cache |
+| `PREGENERATE_THUMBS` | — | Set to `1` to pre-generate thumbnails on startup |
+| `PREGENERATE_THUMBS_LIMIT` | `80` | Cap on thumbnails pre-generated at startup |
+
+## Optional dependencies
+
+- **sharp** — image thumbnail generation. If not installed, image thumbnails fall back to 404.
+- **ffmpeg** (system binary) — video thumbnails and duration metadata. If absent, video thumbnails return 404 and duration is omitted.
+
+## Security
+
+- Passwords hashed with **bcrypt** (cost 12)
+- Login rate-limited (5 attempts / 15 min per IP)
+- Session cookies `httpOnly` + `sameSite=lax`
+- **Helmet** with a strict CSP (no inline scripts)
+- Path traversal blocked via resolved-path checks
+- No upload endpoint — captures can only appear via the filesystem
+- Share tokens are 256-bit random, single-file scoped, and auto-expiring
+
+Don't expose stash directly to the public internet without a tunnel or reverse proxy with HTTPS.
 
 ## Resetting
 
 Delete `data/config.json` and restart. The setup wizard runs again.
 
-## Security
-
-Not a toy — this actually has decent hygiene:
-
-- Passwords hashed with **bcrypt** (cost 12)
-- Login rate-limited (5 attempts / 15 min / IP)
-- Session cookies `httpOnly` + `sameSite=lax`
-- **Helmet** with a strict CSP (no inline scripts)
-- Path traversal blocked via resolved-path checks
-- No upload endpoint exists — captures can only appear via the filesystem
-- Share tokens are 256-bit random, single-file scoped, auto-expiring
-
-That said: don't expose it to the public internet without a tunnel or reverse proxy with HTTPS.
-
 ## Stack
 
 - Node + Express
-- Plain HTML/CSS/vanilla JS frontend (no build step, no framework)
-- JSON files for config and share tokens (no database)
+- Plain HTML / CSS / vanilla JS (no build step, no framework)
+- JSON files for config, share tokens, and favorites (no database)
 
 ## License
 
 MIT
-
-## Proxy / tunnel note
-
-If you run stash behind Cloudflare Tunnel or another reverse proxy, set:
-
-```bash
-TRUST_PROXY=1
-```
-
-Thumbnail pre-generation is off by default. Enable it only if you really want startup work:
-
-```bash
-PREGENERATE_THUMBS=1
-PREGENERATE_THUMBS_LIMIT=50
-```
-

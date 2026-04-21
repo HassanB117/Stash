@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>stash</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Rajdhani:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -133,15 +136,6 @@
       </div>
 
       <div class="settings-section">
-        <label for="siteUrlInput">// SITE URL</label>
-        <input type="text" id="siteUrlInput" placeholder="https://stash.example.com" spellcheck="false" autocomplete="off">
-        <div class="modal-actions">
-          <button type="button" id="saveSiteUrlBtn">UPDATE</button>
-        </div>
-        <div class="settings-msg" id="siteUrlMsg"></div>
-      </div>
-
-      <div class="settings-section">
         <label>// CHANGE PASSWORD</label>
         <input type="password" id="currentPass" placeholder="current password" autocomplete="current-password">
         <input type="password" id="newPass" placeholder="new password (8+ chars)" autocomplete="new-password">
@@ -156,6 +150,25 @@
       </div>
     </div>
   </div>
+
+  <!-- Mobile bottom tab bar (hidden on desktop via CSS) -->
+  <nav class="mobile-tabs" id="mobileTabs">
+    <button class="mobile-tab active" id="mTabRecent">
+      <span class="mobile-tab-icon">⊞</span>
+      <span class="mobile-tab-label">RECENT</span>
+      <span class="mobile-tab-badge" id="mBadgeRecent"></span>
+    </button>
+    <button class="mobile-tab" id="mTabGames">
+      <span class="mobile-tab-icon">◈</span>
+      <span class="mobile-tab-label">GAMES</span>
+      <span class="mobile-tab-badge" id="mBadgeGames"></span>
+    </button>
+    <button class="mobile-tab" id="mTabStarred">
+      <span class="mobile-tab-icon">★</span>
+      <span class="mobile-tab-label">STARRED</span>
+      <span class="mobile-tab-badge" id="mBadgeStarred"></span>
+    </button>
+  </nav>
 
   <script src="/app.js"></script>
 </body>

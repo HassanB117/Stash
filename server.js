@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
-const { ensureThumb, pregenerate, getImageMeta } = require('./thumbs');
+const { ensureThumb, ensurePreview, pregenerate, getImageMeta } = require('./thumbs');
 let sharp; try { sharp = require('sharp'); } catch {}
 
 const app = express();
@@ -114,7 +114,7 @@ app.use(helmet({
 
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: false, limit: '10kb' }));
-app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: '1h' }));
 
 app.use(session({
   secret: getSessionSecret(),
@@ -423,6 +423,7 @@ app.get('/files/*', requireAuth, (req, res) => {
   const relPath = decodeURIComponent(req.params[0]);
   const fullPath = sanitizeRelPath(relPath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
+  res.set('Cache-Control', 'private, max-age=3600');
   res.sendFile(fullPath);
 });
 
@@ -434,9 +435,23 @@ app.get('/thumb/*', requireAuth, async (req, res) => {
   const isVideo = VIDEO_EXT.has(ext);
   try {
     const dest = await ensureThumb(relPath, fullSrcPath, isVideo);
+    res.set('Cache-Control', 'private, max-age=86400');
     res.sendFile(dest);
   } catch {
     res.status(404).send('thumbnail not available');
+  }
+});
+
+app.get('/preview/*', requireAuth, async (req, res) => {
+  const relPath = decodeURIComponent(req.params[0]);
+  const fullSrcPath = sanitizeRelPath(relPath);
+  if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
+  try {
+    const dest = await ensurePreview(relPath, fullSrcPath);
+    res.set('Cache-Control', 'private, max-age=86400');
+    res.sendFile(dest);
+  } catch {
+    res.status(404).send('preview not available');
   }
 });
 
@@ -487,10 +502,12 @@ app.listen(PORT, () => {
   console.log('  └─────────────────────────────────────────────┘');
   console.log('');
 
-  // Thumbnail pre-generation is opt-in so large libraries do not get
-  // hammered on startup. The UI generates thumbnails on demand.
-  if (isConfigured() && process.env.PREGENERATE_THUMBS === '1') {
-    const limit = Number.parseInt(process.env.PREGENERATE_THUMBS_LIMIT || '80', 10);
-    pregenerate(getCapturesSnapshot(true), sanitizeRelPath, Number.isFinite(limit) && limit > 0 ? limit : 80);
+  if (isConfigured()) {
+    const limitEnv = process.env.PREGENERATE_THUMBS_LIMIT;
+    const thumbLimit = limitEnv ? Math.max(1, Number.parseInt(limitEnv, 10)) : Infinity;
+    pregenerate(getCapturesSnapshot(true), sanitizeRelPath, thumbLimit);
+    setInterval(function () {
+      pregenerate(getCapturesSnapshot(true), sanitizeRelPath, thumbLimit);
+    }, 5 * 60 * 1000);
   }
 });
