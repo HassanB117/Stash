@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 FROM node:20-alpine
 
-# ffmpeg ships with ffprobe — used for video thumbnails and duration metadata
-RUN apk add --no-cache ffmpeg
+LABEL org.opencontainers.image.source=https://github.com/HassanB117/Stash
+
+RUN apk add --no-cache ffmpeg wget
 
 WORKDIR /app
 
