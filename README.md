@@ -28,6 +28,16 @@ Open `http://localhost:7117`. The setup wizard asks for three things:
 
 No config files to edit by hand.
 
+## Docker
+
+```bash
+CAPTURES_PATH=/path/to/your/captures docker compose up -d
+```
+
+Open `http://localhost:7117` and enter `/captures` as the captures path in the setup wizard — that's where your host folder is mounted inside the container. App state (config, favorites, share tokens, generated thumbnails) lives in the `stash-data` named volume and survives container restarts.
+
+Override defaults with env vars: `STASH_PORT` (host port), `CAPTURES_PATH` (host captures folder), `TRUST_PROXY` (set to `false` if not behind a proxy).
+
 ## Folder layout
 
 One subfolder per game. Stash scans the top level and treats each folder as a gallery:

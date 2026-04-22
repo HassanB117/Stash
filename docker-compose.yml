@@ -1,0 +1,19 @@
+services:
+  stash:
+    build: .
+    container_name: stash
+    ports:
+      - "${STASH_PORT:-7117}:7117"
+    volumes:
+      # App state: config, shares, favorites, session secret, generated thumbnails
+      - stash-data:/app/data
+      # Host captures folder -> /captures (read-only). Override by setting CAPTURES_PATH.
+      # In the setup wizard, enter "/captures" as the captures path.
+      - ${CAPTURES_PATH:-./captures}:/captures:ro
+    environment:
+      NODE_ENV: production
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+    restart: unless-stopped
+
+volumes:
+  stash-data:
