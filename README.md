@@ -38,6 +38,20 @@ Open `http://localhost:7117` and enter `/captures` as the captures path in the s
 
 Override defaults with env vars: `STASH_PORT` (host port), `CAPTURES_PATH` (host captures folder), `TRUST_PROXY` (set to `false` if not behind a proxy).
 
+```bash
+docker rm -f stash
+
+docker run -d `
+  --name stash `
+  -p 7117:7117 `
+  -v /path/to/your/captures:/captures `
+  -v stash-data:/app/data `
+  -e CAPTURES_PATH=/captures `
+  -e STASH_PORT=7117 `
+  -e TRUST_PROXY=true `
+  ghcr.io/hassanb117/stash:latest
+```
+
 ## Folder layout
 
 One subfolder per game. Stash scans the top level and treats each folder as a gallery:
