@@ -22,13 +22,22 @@ function checkFfmpeg() {
   });
 }
 
+function getSafeRelPath(relPath) {
+  // Normalize and strip leading ".." and slashes to stay within THUMB_DIR
+  return path.normalize(relPath)
+    .replace(/^(\.\.[\/\\])+/, '')
+    .replace(/^[\\\/]+/, '');
+}
+
 function thumbAbsPath(relPath) {
-  const p = path.parse(relPath.replace(/\\/g, '/'));
+  const safeRel = getSafeRelPath(relPath);
+  const p = path.parse(safeRel.replace(/\\/g, '/'));
   return path.join(THUMB_DIR, p.dir, p.name + '.jpg');
 }
 
 function previewAbsPath(relPath) {
-  const p = path.parse(relPath.replace(/\\/g, '/'));
+  const safeRel = getSafeRelPath(relPath);
+  const p = path.parse(safeRel.replace(/\\/g, '/'));
   return path.join(THUMB_DIR, p.dir, p.name + '_preview.mp4');
 }
 
@@ -76,14 +85,13 @@ function makeVideoPreview(relPath, src, dest) {
     const child = spawn('ffmpeg', [
       '-i', src,
       '-t', '2',
-      // Scale to PREV_W wide, height divisible by 2, fast bilinear for speed
-      '-vf', `scale=${PREV_W}:-2:flags=bilinear`,
+      // Scale to PREV_W wide, height divisible by 2, bicubic for better quality
+      '-vf', `scale=${PREV_W}:-2:flags=bicubic`,
       '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '35',
-      // Broad browser/mobile compat
-      '-profile:v', 'baseline',
-      '-level', '3.0',
+      '-preset', 'fast',
+      '-crf', '26',
+      // Modern browser compat (main profile allows better compression than baseline)
+      '-profile:v', 'main',
       '-pix_fmt', 'yuv420p',
       // No audio
       '-an',

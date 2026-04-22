@@ -67,6 +67,7 @@ input:focus, button:focus { outline: none; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
 @keyframes fadeIn { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
 @keyframes spin { to{transform:rotate(360deg)} }
+@keyframes tileIn { from{opacity:0} to{opacity:1} }
 
 /* ── Chamfer mixin via clip-path ── */
 .chamfer {
@@ -390,8 +391,9 @@ button.ghost:hover {
 .game-card {
   position: relative; cursor: pointer; overflow: hidden;
   border: 1px solid rgba(255,255,255,0.06);
-  transition: all 0.2s;
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
   background: var(--surface);
+  animation: tileIn 0.2s ease both;
 }
 .game-card:hover {
   transform: translateY(-3px);
@@ -469,8 +471,9 @@ button.ghost:hover {
   background: var(--surface2);
   overflow: hidden;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
   border: 1px solid rgba(255,255,255,0.05);
+  animation: tileIn 0.15s ease both;
 }
 .tile:hover {
   transform: translateY(-2px);
@@ -720,6 +723,7 @@ button.ghost:hover {
   max-height: 78vh;
   min-width: 280px;
   background: #000;
+  object-fit: contain;
 }
 
 /* Centre play/pause indicator */
@@ -815,22 +819,40 @@ button.ghost:hover {
 .vplayer:fullscreen,
 .vplayer:-webkit-full-screen,
 .vplayer:-moz-full-screen {
-  width: 100vw; height: 100vh; max-width: 100vw;
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  background: #000 !important;
+  display: block !important;
 }
 .vplayer:fullscreen .vplayer-video,
 .vplayer:-webkit-full-screen .vplayer-video,
 .vplayer:-moz-full-screen .vplayer-video {
-  max-width: 100vw;
-  max-height: calc(100vh - 44px);
-  width: auto; height: auto;
-  object-fit: contain;
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  object-fit: cover !important;
+  object-position: center center !important;
 }
 .vplayer:fullscreen .vplayer-bar,
 .vplayer:-webkit-full-screen .vplayer-bar,
 .vplayer:-moz-full-screen .vplayer-bar {
   position: absolute; bottom: 0; left: 0; right: 0;
+  z-index: 2;
+}
+.vplayer:fullscreen .vplayer-pulse,
+.vplayer:-webkit-full-screen .vplayer-pulse,
+.vplayer:-moz-full-screen .vplayer-pulse {
+  z-index: 2;
 }
 
 /* ── Mobile bottom tab bar ─────────────────────────────────────── */

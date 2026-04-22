@@ -12,6 +12,43 @@
   let lightboxIndex = -1;
   let platformFilter = 'All';
   let gameMeta = {};
+  let capturesVersion = '';
+
+  // Lazily fetch duration for video tile badges when they scroll into view
+  var durObserver = typeof IntersectionObserver !== 'undefined' && new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      var badge = entry.target;
+      durObserver.unobserve(badge);
+      var p = badge.dataset.durPath;
+      if (!p) return;
+      if (metaCache[p] !== undefined) {
+        var mc = metaCache[p];
+        if (mc && mc.duration) badge.textContent = '▶ ' + mc.duration;
+        return;
+      }
+      fetch('/api/file-meta?path=' + encodeURIComponent(p))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (m) { metaCache[p] = m; if (m && m.duration) badge.textContent = '▶ ' + m.duration; })
+        .catch(function () {});
+    });
+  }, { rootMargin: '200px' });
+
+  // Lazily set background-image on game card art when it scrolls into view
+  var artObserver = typeof IntersectionObserver !== 'undefined' && new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      var el = entry.target;
+      artObserver.unobserve(el);
+      var bg = el.dataset.bg;
+      if (bg) {
+        el.style.backgroundImage = "url('" + bg + "')";
+        el.style.backgroundSize = 'cover';
+        el.style.backgroundPosition = 'center';
+        delete el.dataset.bg;
+      }
+    });
+  }, { rootMargin: '200px' });
 
   const RECENT_PAGE_SIZE = 120;
 
@@ -109,6 +146,7 @@
     const res = await fetch('/api/captures');
     if (res.status === 401) { window.location.href = '/login'; return; }
     allCaptures = await res.json();
+    capturesVersion = getCapturesVersion(allCaptures);
     gameMeta = {};
     Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
     renderFilters();
@@ -132,6 +170,18 @@
       $('mBadgeGames').textContent   = games.length || '';
       $('mBadgeStarred').textContent = favorites.size || '';
     }
+  }
+
+  function getCapturesVersion(captures) {
+    var games = Object.keys(captures).sort();
+    var parts = [];
+    games.forEach(function (game) {
+      parts.push(game);
+      captures[game].forEach(function (item) {
+        parts.push(item.path + '|' + item.mtime + '|' + item.type);
+      });
+    });
+    return parts.join('\n');
   }
 
   function escapeHtml(s) {
@@ -206,12 +256,14 @@
       return;
     }
 
+    var scrollTop = grid.scrollTop;
     var visible = recentItems.slice(0, recentVisibleCount);
     grid.innerHTML = visible.map(function (item, i) {
       return renderTileHTML(item, i);
     }).join('');
 
     attachTileEvents(grid, visible);
+    grid.scrollTop = scrollTop;
 
     if (recentShownCount) {
       recentShownCount.textContent = visible.length + ' / ' + recentItems.length + ' SHOWN';
@@ -226,7 +278,10 @@
 
   function renderGrid() {
     recentItems = buildRecentItems();
-    recentVisibleCount = Math.min(RECENT_PAGE_SIZE, recentItems.length);
+    // Preserve how many items the user has loaded; only reset on first call (count=0)
+    recentVisibleCount = recentVisibleCount > 0
+      ? Math.min(recentVisibleCount, recentItems.length)
+      : Math.min(RECENT_PAGE_SIZE, recentItems.length);
     renderRecentGrid();
   }
 
@@ -270,7 +325,7 @@
     var date       = formatDate(item.mtime);
     var starred    = favorites.has(item.path);
     var media      = item.type === 'video'
-      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + previewUrl + '" data-file="' + fileUrl + '"></video><div class="badge" data-dur-badge>▶ CLIP</div>'
+      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + previewUrl + '" data-file="' + fileUrl + '"></video><div class="badge" data-dur-badge data-dur-path="' + escapeHtml(item.path) + '">▶ CLIP</div>'
       : '<img src="' + thumbUrl + '" alt="' + escapeHtml(item.name) + '" loading="lazy" data-fallback="' + fileUrl + '">';
     return '<div class="tile" data-index="' + i + '">' +
       '<button class="tile-star' + (starred ? ' starred' : '') + '" data-path="' + escapeHtml(item.path) + '">' + (starred ? '★' : '☆') + '</button>' +
@@ -303,20 +358,29 @@
       if (item.type === 'video') {
         var video = tile.querySelector('video');
         tile.addEventListener('mouseenter', function () {
+          tile._hovered = true;
           if (video && !video.src) {
             video.src = video.dataset.src || '';
-            if (video.src) video.load();
+            video.load();
+            video.addEventListener('canplay', function () {
+              if (tile._hovered) video.play().catch(function () {});
+            }, { once: true });
+          } else if (video) {
+            video.play().catch(function () {});
           }
-          if (video) video.play().catch(function () {});
         });
         tile.addEventListener('mouseleave', function () {
+          tile._hovered = false;
           if (!video) return;
           video.pause();
-          try { video.currentTime = 0; } catch (err) {}
+          try { video.currentTime = 0; } catch (e) {}
         });
       }
       tile.addEventListener('click', function () { openLightbox(item, items, idx); });
     });
+    if (durObserver) {
+      container.querySelectorAll('[data-dur-badge]').forEach(function (b) { durObserver.observe(b); });
+    }
   }
 
 
@@ -390,7 +454,7 @@
       var artHtml;
       if (thumbUrl) {
         var safeThumb = thumbUrl.replace(/'/g, '%27');
-        artHtml = '<div class="game-card-art" style="background-image:url(\'' + safeThumb + '\');background-size:cover;background-position:center">' +
+        artHtml = '<div class="game-card-art" data-bg="' + safeThumb + '">' +
           '<div style="position:absolute;inset:0;background:linear-gradient(transparent 30%,rgba(0,0,0,0.75))"></div>' +
           '</div>';
       } else {
@@ -433,156 +497,9 @@
         showDrilldown(card.dataset.game);
       });
     });
-  }
-
-  // ── Custom video player ───────────────────────────────────────────────
-  function buildVideoPlayer(src) {
-    var wrap = document.createElement('div');
-    wrap.className = 'vplayer';
-
-    var vid = document.createElement('video');
-    vid.className = 'vplayer-video';
-    vid.src = src;
-    vid.preload = 'auto';
-    vid.playsInline = true;
-
-    var pulse = document.createElement('div');
-    pulse.className = 'vplayer-pulse';
-    pulse.innerHTML = '<span>▶</span>';
-
-    var bar = document.createElement('div');
-    bar.className = 'vplayer-bar';
-
-    var btnPlay = document.createElement('button');
-    btnPlay.className = 'vplayer-btn';
-    btnPlay.textContent = '▶';
-
-    var timeEl = document.createElement('span');
-    timeEl.className = 'vplayer-time';
-    timeEl.textContent = '0:00 / 0:00';
-
-    var seekWrap = document.createElement('div');
-    seekWrap.className = 'vplayer-seek';
-    var seekBuf  = document.createElement('div');
-    seekBuf.className  = 'vplayer-seek-buf';
-    var seekFill = document.createElement('div');
-    seekFill.className = 'vplayer-seek-fill';
-    seekWrap.appendChild(seekBuf);
-    seekWrap.appendChild(seekFill);
-
-    var btnMute = document.createElement('button');
-    btnMute.className = 'vplayer-btn';
-    btnMute.textContent = 'VOL';
-
-    var btnFs = document.createElement('button');
-    btnFs.className = 'vplayer-btn';
-    btnFs.textContent = '⛶';
-
-    bar.appendChild(btnPlay);
-    bar.appendChild(timeEl);
-    bar.appendChild(seekWrap);
-    bar.appendChild(btnMute);
-    bar.appendChild(btnFs);
-    wrap.appendChild(vid);
-    wrap.appendChild(pulse);
-    wrap.appendChild(bar);
-
-    var hideTimer = null;
-    var seeking = false;
-
-    function fmt(s) {
-      s = Math.floor(s || 0);
-      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    if (artObserver) {
+      gamesGridEl.querySelectorAll('[data-bg]').forEach(function (el) { artObserver.observe(el); });
     }
-
-    function reveal() {
-      wrap.classList.remove('vp-hidden');
-      clearTimeout(hideTimer);
-      if (!vid.paused && !vid.ended) {
-        hideTimer = setTimeout(function () { wrap.classList.add('vp-hidden'); }, 3000);
-      }
-    }
-
-    function syncState() {
-      var playing = !vid.paused && !vid.ended;
-      btnPlay.textContent = playing ? '⏸' : '▶';
-      pulse.querySelector('span').textContent = playing ? '⏸' : '▶';
-      wrap.classList.toggle('vp-playing', playing);
-      if (!playing) { clearTimeout(hideTimer); wrap.classList.remove('vp-hidden'); }
-      else reveal();
-    }
-
-    function updateProgress() {
-      var dur = vid.duration || 0;
-      var cur = vid.currentTime;
-      var pct = dur ? (cur / dur * 100) : 0;
-      seekFill.style.width = pct + '%';
-      timeEl.textContent = fmt(cur) + ' / ' + fmt(dur);
-      if (dur && vid.buffered.length) {
-        seekBuf.style.width = (vid.buffered.end(vid.buffered.length - 1) / dur * 100) + '%';
-      }
-    }
-
-    function doSeek(e) {
-      var r   = seekWrap.getBoundingClientRect();
-      var x   = e.clientX !== undefined ? e.clientX : (e.touches ? e.touches[0].clientX : 0);
-      var pct = Math.max(0, Math.min(1, (x - r.left) / r.width));
-      vid.currentTime = pct * (vid.duration || 0);
-      updateProgress();
-    }
-
-    seekWrap.addEventListener('pointerdown', function (e) {
-      e.preventDefault();
-      seekWrap.setPointerCapture(e.pointerId);
-      seeking = true;
-      doSeek(e);
-      reveal();
-    });
-    seekWrap.addEventListener('pointermove', function (e) {
-      if (seeking) { doSeek(e); }
-    });
-    seekWrap.addEventListener('pointerup', function () { seeking = false; });
-
-    function togglePlay(e) {
-      if (e) e.stopPropagation();
-      reveal();
-      if (vid.paused || vid.ended) vid.play().catch(function () {});
-      else vid.pause();
-    }
-
-    pulse.addEventListener('click', function (e) { e.stopPropagation(); togglePlay(); });
-    vid.addEventListener('click', togglePlay);
-    btnPlay.addEventListener('click', function (e) { e.stopPropagation(); togglePlay(); });
-
-    btnMute.addEventListener('click', function (e) {
-      e.stopPropagation();
-      vid.muted = !vid.muted;
-      btnMute.textContent = vid.muted ? 'MUTE' : 'VOL';
-      reveal();
-    });
-
-    btnFs.addEventListener('click', function (e) {
-      e.stopPropagation();
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      } else if (wrap.requestFullscreen) {
-        wrap.requestFullscreen();
-      } else if (vid.webkitEnterFullscreen) {
-        vid.webkitEnterFullscreen();
-      }
-    });
-
-    vid.addEventListener('play',           syncState);
-    vid.addEventListener('pause',          syncState);
-    vid.addEventListener('ended',          syncState);
-    vid.addEventListener('timeupdate',     updateProgress);
-    vid.addEventListener('loadedmetadata', updateProgress);
-
-    wrap.addEventListener('mousemove',  function () { reveal(); });
-    wrap.addEventListener('touchstart', function () { reveal(); }, { passive: true });
-
-    vid.play().catch(function () {});
-    return wrap;
   }
 
   // ── Lightbox ──────────────────────────────────────────────────────────
@@ -686,24 +603,21 @@
       else if (currentDrillGame)                         showLibrary();
       return;
     }
-    // Video keyboard shortcuts (space/k=play, ←/→=seek ±5s, m=mute, f=fullscreen)
-    // For images: ←/→ navigate between items
+    // ←/→ always navigate items; j/l seek video ±5s; space/k play-pause; m mute; f fullscreen
     if (!lightbox.classList.contains('open') || shareModal.classList.contains('open')) return;
     var activeTag = document.activeElement && document.activeElement.tagName;
     if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
     var vid = lbContent.querySelector('.vplayer-video');
-    if (!vid) {
-      if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateLightbox(-1); }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); navigateLightbox(+1); }
-      return;
-    }
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateLightbox(-1); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); navigateLightbox(+1); return; }
+    if (!vid) return;
     if (e.key === ' ' || e.key === 'k') {
       e.preventDefault();
       if (vid.paused || vid.ended) vid.play().catch(function () {}); else vid.pause();
-    } else if (e.key === 'ArrowLeft') {
+    } else if (e.key === 'j' || e.key === 'J') {
       e.preventDefault();
       vid.currentTime = Math.max(0, vid.currentTime - 5);
-    } else if (e.key === 'ArrowRight') {
+    } else if (e.key === 'l' || e.key === 'L') {
       e.preventDefault();
       vid.currentTime = Math.min(vid.duration || 0, vid.currentTime + 5);
     } else if (e.key === 'm' || e.key === 'M') {
@@ -727,7 +641,7 @@
       });
       var data = await res.json();
       if (!res.ok) { alert(data.error || 'failed'); return; }
-      shareUrlEl.value = (siteUrl || window.location.origin) + data.url;
+      shareUrlEl.value = data.url.startsWith('http') ? data.url : window.location.origin + data.url;
       shareModal.classList.add('open');
     } catch { alert('share failed'); }
   });
@@ -830,10 +744,10 @@
         var res = await fetch('/api/captures');
         if (!res.ok) return;
         var newCaptures = await res.json();
-        var oldTotal = Object.values(allCaptures).reduce(function (s, a) { return s + a.length; }, 0);
-        var newTotal = Object.values(newCaptures).reduce(function (s, a) { return s + a.length; }, 0);
-        if (newTotal !== oldTotal || Object.keys(newCaptures).length !== Object.keys(allCaptures).length) {
+        var newVersion = getCapturesVersion(newCaptures);
+        if (newVersion !== capturesVersion) {
           allCaptures = newCaptures;
+          capturesVersion = newVersion;
           gameMeta = {};
           Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
           renderFilters();

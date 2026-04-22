@@ -24,8 +24,7 @@
     <button type="submit">ACCESS SYSTEM</button>
     <div class="error" id="error"></div>
     <div style="text-align:center;margin-top:4px;">
-      <a href="/setup" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;text-decoration:none;transition:color 0.15s;"
-        onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-dim)'">
+      <a href="/setup" id="setupLink" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;text-decoration:none;transition:color 0.15s;">
         FIRST RUN → SETUP
       </a>
     </div>
@@ -35,14 +34,5 @@
 
   <script src="/common.js"></script>
   <script src="/login.js"></script>
-  <script>
-    // Live clock
-    function updateTime() {
-      const el = document.getElementById('sysTime');
-      if (el) el.textContent = 'SYSTEM ONLINE · ' + new Date().toUTCString().slice(0,16).toUpperCase();
-    }
-    updateTime();
-    setInterval(updateTime, 1000);
-  </script>
 </body>
 </html>

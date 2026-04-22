@@ -1,23 +1,56 @@
 (async function () {
-  var token = location.pathname.split('/')[2];
-  var el    = document.getElementById('content');
+  const token = location.pathname.split('/')[2];
+  const $ = id => document.getElementById(id);
+
+  const card = $('shareCard');
+  const mediaWrap = $('mediaWrap');
+  const loading = $('loading');
+  const statusLabel = $('statusLabel');
+
+  function showMessage(text) {
+    loading.textContent = '// ' + text;
+    loading.style.display = 'block';
+    card.style.display = 'none';
+    statusLabel.textContent = 'ERROR';
+  }
+
   try {
-    var res  = await fetch('/s/' + token + '/meta');
+    const res = await fetch('/s/' + token + '/meta');
     if (!res.ok) {
-      el.innerHTML = '<div style="font-size:10px;letter-spacing:3px;color:var(--text-dim);">// LINK EXPIRED OR NOT FOUND</div>';
+      showMessage('LINK EXPIRED OR NOT FOUND');
       return;
     }
-    var meta = await res.json();
-    var src  = '/s/' + token + '/file';
-    var expires = new Date(meta.expiresAt).toLocaleString();
-    var media = meta.type === 'video'
-      ? '<video src="' + src + '" controls autoplay></video>'
-      : '<img src="' + src + '" alt="' + meta.name + '">';
-    el.innerHTML = media +
-      '<div class="share-meta"><span>' + meta.name + '</span></div>' +
-      '<div class="share-expiry">// LINK EXPIRES ' + expires.toUpperCase() + '</div>';
-    document.title = 'stash \xb7 ' + meta.name;
-  } catch {
-    el.innerHTML = '<div style="font-size:10px;letter-spacing:3px;color:var(--text-dim);">// FAILED TO LOAD</div>';
+
+    const meta = await res.json();
+    const src = '/s/' + token + '/file';
+    const expires = new Date(meta.expiresAt);
+    const now = new Date();
+    const diffHours = Math.round((expires - now) / (1000 * 60 * 60));
+
+    // Update Meta
+    $('filename').textContent = meta.name;
+    $('fileType').textContent = (meta.type === 'video' ? 'VIDEO CLIP' : 'IMAGE CAPTURE') + ' · ' + meta.name.split('.').pop().toUpperCase();
+    $('expiry').textContent = '// EXPIRES IN ' + diffHours + ' HOURS (' + expires.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ')';
+    statusLabel.textContent = 'READY TO VIEW';
+
+    // Insert Media
+    mediaWrap.innerHTML = '';
+    if (meta.type === 'video') {
+      const player = window.buildVideoPlayer(src);
+      mediaWrap.appendChild(player);
+    } else {
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = meta.name;
+      mediaWrap.appendChild(img);
+    }
+
+    loading.style.display = 'none';
+    card.style.display = 'block';
+    document.title = 'stash · ' + meta.name;
+
+  } catch (err) {
+    console.error(err);
+    showMessage('FAILED TO LOAD DATA');
   }
 })();

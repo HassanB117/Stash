@@ -11,7 +11,7 @@ const { ensureThumb, ensurePreview, pregenerate, getImageMeta } = require('./thu
 let sharp; try { sharp = require('sharp'); } catch {}
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 7117;
 function getTrustProxySetting() {
   const raw = process.env.TRUST_PROXY;
   if (raw === undefined || raw === '') return 1;
@@ -27,7 +27,7 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SHARES_FILE = path.join(DATA_DIR, 'shares.json');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
 const SESSION_SECRET_FILE = path.join(DATA_DIR, 'session.secret');
-const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mov']);
+const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mov', '.jxr', '.avif', '.heic', '.heif']);
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov']);
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -137,14 +137,14 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 // --- Middleware ---
-// Helmet with CSP that allows our own scripts (no inline scripts used anywhere)
+// Helmet with CSP that allows our own scripts.
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      scriptSrc: ["'self'", "https://static.cloudflareinsights.com", "'sha256-+SymLLAift7TpMaJDSwBsQT9J4qe7yYVJWlpMffsYNk='"],
+      scriptSrc: ["'self'", "https://static.cloudflareinsights.com"],
       imgSrc: ["'self'", "data:"],
       mediaSrc: ["'self'"],
       connectSrc: ["'self'", "https://cloudflareinsights.com"],
@@ -195,7 +195,7 @@ const shareLimiter = rateLimit({
 
 const mediaLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  limit: 180,
+  limit: 1000,
   message: { error: 'Too many media requests. Try again later.' },
   standardHeaders: 'draft-7',
   legacyHeaders: false,
@@ -541,7 +541,8 @@ app.post('/api/share', requireAuth, shareLimiter, requireCsrf, (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
   addShare(token, canonical, expiresAt);
-  res.json({ token, url: `/s/${token}`, expiresAt });
+  const relUrl = `/s/${token}`;
+  res.json({ token, url: cfg.siteUrl ? `${cfg.siteUrl}${relUrl}` : relUrl, expiresAt });
 });
 
 app.get('/s/:token', (req, res) => {
@@ -581,11 +582,9 @@ app.listen(PORT, () => {
   console.log('');
 
   if (isConfigured()) {
-    const limitEnv = process.env.PREGENERATE_THUMBS_LIMIT;
-    const thumbLimit = limitEnv ? Math.max(1, Number.parseInt(limitEnv, 10)) : Infinity;
-    pregenerate(getCapturesSnapshot(true), sanitizeRelPath, thumbLimit);
+    pregenerate(getCapturesSnapshot(true), sanitizeRelPath);
     setInterval(function () {
-      pregenerate(getCapturesSnapshot(true), sanitizeRelPath, thumbLimit);
+      pregenerate(getCapturesSnapshot(true), sanitizeRelPath);
     }, 5 * 60 * 1000);
   }
 });
