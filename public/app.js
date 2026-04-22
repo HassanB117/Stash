@@ -8,6 +8,10 @@
   let metaCache = {};
   let recentItems = [];
   let recentVisibleCount = 0;
+  let lightboxQueue = [];
+  let lightboxIndex = -1;
+  let platformFilter = 'All';
+  let gameMeta = {};
 
   const RECENT_PAGE_SIZE = 120;
 
@@ -75,7 +79,8 @@
     currentDrillGame = game;
     gamesLibrary.style.display  = 'none';
     gameDrilldown.style.display = 'flex';
-    $('drilldownTitle').textContent = game.toUpperCase();
+    var dn = (gameMeta[game] && gameMeta[game].displayName) || game;
+    $('drilldownTitle').textContent = dn.toUpperCase();
     var items = allCaptures[game] || [];
     $('drilldownCount').textContent = items.length + ' CAPTURES';
     renderDrilldownGrid(game, items);
@@ -104,9 +109,12 @@
     const res = await fetch('/api/captures');
     if (res.status === 401) { window.location.href = '/login'; return; }
     allCaptures = await res.json();
+    gameMeta = {};
+    Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
     renderFilters();
     renderGrid();
     updateCounts();
+    renderPlatformPills();
     renderGamesGrid(Object.keys(allCaptures).sort());
   }
 
@@ -129,6 +137,36 @@
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
       return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
+  }
+
+  function parsePlatform(folderName) {
+    var idx = folderName.lastIndexOf(' - ');
+    if (idx === -1) return { displayName: folderName, platform: null };
+    return { displayName: folderName.slice(0, idx), platform: folderName.slice(idx + 3) };
+  }
+
+  function renderPlatformPills() {
+    var pillsEl = $('platformPills');
+    if (!pillsEl) return;
+    var platforms = [];
+    Object.values(gameMeta).forEach(function (m) {
+      if (m.platform && platforms.indexOf(m.platform) === -1) platforms.push(m.platform);
+    });
+    platforms.sort();
+    if (platforms.length === 0) { pillsEl.style.display = 'none'; return; }
+    pillsEl.style.display = '';
+    var tags = ['All'].concat(platforms);
+    pillsEl.innerHTML = tags.map(function (p) {
+      return '<button class="platform-pill' + (p === platformFilter ? ' active' : '') +
+             '" data-platform="' + escapeHtml(p) + '">' + escapeHtml(p) + '</button>';
+    }).join('');
+    pillsEl.querySelectorAll('.platform-pill').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        platformFilter = btn.dataset.platform;
+        renderPlatformPills();
+        renderGamesGrid(Object.keys(allCaptures).sort());
+      });
     });
   }
 
@@ -238,7 +276,7 @@
       '<button class="tile-star' + (starred ? ' starred' : '') + '" data-path="' + escapeHtml(item.path) + '">' + (starred ? '★' : '☆') + '</button>' +
       media +
       '<div class="tile-label">' +
-        '<span>' + escapeHtml(item.game.toUpperCase().slice(0, 18)) + '</span>' +
+        '<span>' + escapeHtml(((gameMeta[item.game] && gameMeta[item.game].displayName) || item.game).toUpperCase().slice(0, 18)) + '</span>' +
         '<span class="tile-date">' + date + '</span>' +
       '</div>' +
     '</div>';
@@ -277,7 +315,7 @@
           try { video.currentTime = 0; } catch (err) {}
         });
       }
-      tile.addEventListener('click', function () { openLightbox(item); });
+      tile.addEventListener('click', function () { openLightbox(item, items, idx); });
     });
   }
 
@@ -322,18 +360,23 @@
   gamesSearchEl.addEventListener('input', function () {
     var q     = gamesSearchEl.value.trim().toLowerCase();
     var games = Object.keys(allCaptures).sort().filter(function (g) {
-      return g.toLowerCase().includes(q);
+      var dn = (gameMeta[g] && gameMeta[g].displayName) || g;
+      return dn.toLowerCase().includes(q) || g.toLowerCase().includes(q);
     });
     gamesCountEl.textContent = q ? games.length + ' RESULTS' : '';
     renderGamesGrid(games);
   });
 
   function renderGamesGrid(games) {
+    if (platformFilter !== 'All') {
+      games = games.filter(function (g) { return gameMeta[g] && gameMeta[g].platform === platformFilter; });
+    }
     if (games.length === 0) {
       gamesGridEl.innerHTML = '<div class="empty" style="grid-column:1/-1">// NO GAMES FOUND</div>';
       return;
     }
     gamesGridEl.innerHTML = games.map(function (game) {
+      var displayName = (gameMeta[game] && gameMeta[game].displayName) || game;
       var items   = allCaptures[game] || [];
       var count   = items.length;
       var hasClip = items.some(function (i) { return i.type === 'video'; });
@@ -376,7 +419,7 @@
       return '<div class="game-card" data-game="' + escapeHtml(game) + '">' +
         artHtml +
         '<div class="game-card-info">' +
-          '<div class="game-card-name">' + escapeHtml(game) + '</div>' +
+          '<div class="game-card-name">' + escapeHtml(displayName) + '</div>' +
           '<div class="game-card-meta">' +
             '<span>' + count + (count === 1 ? ' CAPTURE' : ' CAPTURES') + (hasClip ? ' · CLIPS' : '') + '</span>' +
             '<span>' + date + '</span>' +
@@ -543,8 +586,26 @@
   }
 
   // ── Lightbox ──────────────────────────────────────────────────────────
-  function openLightbox(item) {
+  function updateNavArrows() {
+    var prevBtn = $('lbPrev');
+    var nextBtn = $('lbNext');
+    if (!prevBtn || !nextBtn) return;
+    if (lightboxQueue.length <= 1) { prevBtn.hidden = true; nextBtn.hidden = true; return; }
+    prevBtn.hidden = lightboxIndex <= 0;
+    nextBtn.hidden = lightboxIndex >= lightboxQueue.length - 1;
+  }
+
+  function navigateLightbox(delta) {
+    var newIdx = lightboxIndex + delta;
+    if (newIdx < 0 || newIdx >= lightboxQueue.length) return;
+    openLightbox(lightboxQueue[newIdx], lightboxQueue, newIdx);
+  }
+
+  function openLightbox(item, queue, idx) {
     currentItem = item;
+    lightboxQueue = queue || [];
+    lightboxIndex = (idx !== undefined) ? idx : -1;
+
     var fileUrl = '/files/' + encodeURIComponent(item.path);
     lbContent.innerHTML = '';
     if (item.type === 'video') {
@@ -556,7 +617,8 @@
       lbContent.appendChild(img);
     }
 
-    $('lbGame').textContent = item.game.toUpperCase();
+    var displayGame = (gameMeta[item.game] && gameMeta[item.game].displayName) || item.game;
+    $('lbGame').textContent = displayGame.toUpperCase();
     $('lbName').textContent = item.name;
     $('lbDate').textContent = formatDate(item.mtime);
 
@@ -568,6 +630,7 @@
     $('lbMetaSep2').style.display = 'none';
     fetchFileMeta(item.path);
 
+    updateNavArrows();
     lbMeta.style.display = 'flex';
     lightbox.classList.add('open');
   }
@@ -582,6 +645,8 @@
     $('lbDetail').style.display = 'none';
     $('lbMetaSep2').style.display = 'none';
     currentItem = null;
+    lightboxQueue = [];
+    lightboxIndex = -1;
   }
 
   async function fetchFileMeta(filePath) {
@@ -602,6 +667,8 @@
   }
 
   $('lbClose').addEventListener('click', closeLightbox);
+  $('lbPrev').addEventListener('click', function (e) { e.stopPropagation(); navigateLightbox(-1); });
+  $('lbNext').addEventListener('click', function (e) { e.stopPropagation(); navigateLightbox(+1); });
   lightbox.addEventListener('click', function (e) {
     if (e.target === lightbox) closeLightbox();
   });
@@ -620,11 +687,16 @@
       return;
     }
     // Video keyboard shortcuts (space/k=play, ←/→=seek ±5s, m=mute, f=fullscreen)
+    // For images: ←/→ navigate between items
     if (!lightbox.classList.contains('open') || shareModal.classList.contains('open')) return;
     var activeTag = document.activeElement && document.activeElement.tagName;
     if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
     var vid = lbContent.querySelector('.vplayer-video');
-    if (!vid) return;
+    if (!vid) {
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateLightbox(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); navigateLightbox(+1); }
+      return;
+    }
     if (e.key === ' ' || e.key === 'k') {
       e.preventDefault();
       if (vid.paused || vid.ended) vid.play().catch(function () {}); else vid.pause();
@@ -762,9 +834,12 @@
         var newTotal = Object.values(newCaptures).reduce(function (s, a) { return s + a.length; }, 0);
         if (newTotal !== oldTotal || Object.keys(newCaptures).length !== Object.keys(allCaptures).length) {
           allCaptures = newCaptures;
+          gameMeta = {};
+          Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
           renderFilters();
           renderGrid();
           updateCounts();
+          renderPlatformPills();
           renderGamesGrid(Object.keys(allCaptures).sort());
         }
       } catch {}

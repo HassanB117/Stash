@@ -26,6 +26,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SHARES_FILE = path.join(DATA_DIR, 'shares.json');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
+const SESSION_SECRET_FILE = path.join(DATA_DIR, 'session.secret');
 const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mov']);
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov']);
 
@@ -61,12 +62,51 @@ function isConfigured() {
 function getSessionSecret() {
   const cfg = loadConfig();
   if (cfg && cfg.sessionSecret) return cfg.sessionSecret;
-  return crypto.randomBytes(32).toString('hex');
+  try {
+    if (fs.existsSync(SESSION_SECRET_FILE)) {
+      return fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
+    }
+    const secret = crypto.randomBytes(64).toString('hex');
+    fs.writeFileSync(SESSION_SECRET_FILE, secret, { mode: 0o600 });
+    return secret;
+  } catch {
+    return crypto.randomBytes(64).toString('hex');
+  }
+}
+
+function ensureSessionCsrfToken(req) {
+  if (!req.session) return null;
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+  }
+  return req.session.csrfToken;
+}
+
+function requireCsrf(req, res, next) {
+  const supplied = req.get('x-csrf-token') || req.body?.csrfToken || req.query?.csrfToken;
+  const expected = ensureSessionCsrfToken(req);
+  if (!supplied || !expected || supplied !== expected) {
+    return res.status(403).json({ error: 'bad csrf token' });
+  }
+  next();
 }
 
 // --- Favorites ---
 function loadFavorites() {
-  try { return JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf8')); }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    const cfg = loadConfig();
+    if (!cfg || !cfg.capturesPath) return parsed.filter(v => typeof v === 'string');
+    const capturesDir = path.resolve(cfg.capturesPath);
+    return parsed
+      .filter(v => typeof v === 'string' && v.trim())
+      .map(v => {
+        const full = sanitizeRelPath(v);
+        if (!full) return v.replace(/\\/g, '/');
+        return path.relative(capturesDir, full).split(path.sep).join('/');
+      });
+  }
   catch { return []; }
 }
 function saveFavorites(arr) { fs.writeFileSync(FAVORITES_FILE, JSON.stringify(arr)); }
@@ -102,11 +142,12 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      scriptSrc: ["'self'", "https://static.cloudflareinsights.com", "'sha256-+SymLLAift7TpMaJDSwBsQT9J4qe7yYVJWlpMffsYNk='"],
       imgSrc: ["'self'", "data:"],
       mediaSrc: ["'self'"],
-      connectSrc: ["'self'"],
+      connectSrc: ["'self'", "https://cloudflareinsights.com"],
     },
   },
   crossOriginEmbedderPolicy: false,
@@ -136,6 +177,30 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const mutationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  message: { error: 'Too many requests. Try again later.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
+const shareLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  message: { error: 'Too many share requests. Try again later.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
+const mediaLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 180,
+  message: { error: 'Too many media requests. Try again later.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
 // --- Helpers ---
 function sanitizeRelPath(relPath) {
   const cfg = loadConfig();
@@ -158,6 +223,10 @@ function requireSetupNotDone(req, res, next) {
   if (isConfigured()) return res.status(403).json({ error: 'already configured' });
   next();
 }
+
+app.get('/api/csrf', (req, res) => {
+  res.json({ csrfToken: ensureSessionCsrfToken(req) });
+});
 
 function scanCapturesFromDir(capturesDir) {
   if (!fs.existsSync(capturesDir)) return {};
@@ -215,7 +284,7 @@ app.get('/setup', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'setup.html'));
 });
 
-app.post('/api/setup/check-path', requireSetupNotDone, (req, res) => {
+app.post('/api/setup/check-path', requireSetupNotDone, requireCsrf, (req, res) => {
   const { path: folderPath } = req.body;
   if (!folderPath || typeof folderPath !== 'string') {
     return res.status(400).json({ ok: false, error: 'no path provided' });
@@ -231,7 +300,7 @@ app.post('/api/setup/check-path', requireSetupNotDone, (req, res) => {
   }
 });
 
-app.post('/api/setup/complete', requireSetupNotDone, async (req, res) => {
+app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, res) => {
   const { username, password, capturesPath } = req.body;
   if (!username || !password || !capturesPath) return res.status(400).json({ error: 'all fields required' });
   if (typeof username !== 'string' || username.length < 2 || username.length > 32) {
@@ -250,7 +319,10 @@ app.post('/api/setup/complete', requireSetupNotDone, async (req, res) => {
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
-  const sessionSecret = crypto.randomBytes(64).toString('hex');
+  const sessionSecret = getSessionSecret();
+  try {
+    fs.writeFileSync(SESSION_SECRET_FILE, sessionSecret, { mode: 0o600 });
+  } catch {}
   captureCache.stamp = 0;
   captureCache.key = '';
   captureCache.value = {};
@@ -270,7 +342,7 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
-app.post('/login', loginLimiter, async (req, res) => {
+app.post('/login', loginLimiter, requireCsrf, async (req, res) => {
   if (!isConfigured()) return res.status(400).json({ error: 'setup not complete' });
   const cfg = loadConfig();
   const { username, password } = req.body;
@@ -279,10 +351,11 @@ app.post('/login', loginLimiter, async (req, res) => {
   const passOk = await bcrypt.compare(password, cfg.passwordHash);
   if (!userOk || !passOk) return res.status(401).json({ error: 'wrong username or password' });
   req.session.authed = true;
+  ensureSessionCsrfToken(req);
   res.json({ ok: true });
 });
 
-app.post('/logout', (req, res) => {
+app.post('/logout', requireCsrf, (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
@@ -293,7 +366,7 @@ app.get('/api/config', requireAuth, (req, res) => {
   res.json({ username: cfg.username, capturesPath: cfg.capturesPath, siteUrl: cfg.siteUrl || '' });
 });
 
-app.post('/api/config/path', requireAuth, (req, res) => {
+app.post('/api/config/path', requireAuth, mutationLimiter, requireCsrf, (req, res) => {
   const { capturesPath } = req.body;
   if (!capturesPath || typeof capturesPath !== 'string') return res.status(400).json({ error: 'no path' });
   try {
@@ -313,7 +386,7 @@ app.post('/api/config/path', requireAuth, (req, res) => {
   }
 });
 
-app.post('/api/config/url', requireAuth, (req, res) => {
+app.post('/api/config/url', requireAuth, mutationLimiter, requireCsrf, (req, res) => {
   let { siteUrl } = req.body;
   if (siteUrl && typeof siteUrl === 'string' && siteUrl.trim()) {
     siteUrl = siteUrl.trim().replace(/\/$/, '');
@@ -328,7 +401,7 @@ app.post('/api/config/url', requireAuth, (req, res) => {
   res.json({ ok: true, siteUrl });
 });
 
-app.post('/api/config/password', requireAuth, async (req, res) => {
+app.post('/api/config/password', requireAuth, mutationLimiter, requireCsrf, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const cfg = loadConfig();
   if (!await bcrypt.compare(currentPassword || '', cfg.passwordHash)) {
@@ -344,20 +417,23 @@ app.post('/api/config/password', requireAuth, async (req, res) => {
 
 app.get('/api/favorites', requireAuth, (req, res) => res.json(loadFavorites()));
 
-app.post('/api/favorites/toggle', requireAuth, (req, res) => {
+app.post('/api/favorites/toggle', requireAuth, mutationLimiter, requireCsrf, (req, res) => {
   const { filePath } = req.body;
   if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'bad request' });
-  if (!sanitizeRelPath(filePath)) return res.status(400).json({ error: 'invalid path' });
+  const fullPath = sanitizeRelPath(filePath);
+  if (!fullPath) return res.status(400).json({ error: 'invalid path' });
+  const cfg = loadConfig();
+  const canonical = path.relative(path.resolve(cfg.capturesPath), fullPath).split(path.sep).join('/');
   const favs = loadFavorites();
-  const idx = favs.indexOf(filePath);
+  const idx = favs.indexOf(canonical);
   const starred = idx === -1;
-  if (starred) favs.push(filePath);
+  if (starred) favs.push(canonical);
   else favs.splice(idx, 1);
   saveFavorites(favs);
   res.json({ starred });
 });
 
-app.get('/api/file-meta', requireAuth, async (req, res) => {
+app.get('/api/file-meta', requireAuth, mediaLimiter, async (req, res) => {
   const relPath = req.query.path;
   if (!relPath) return res.status(400).json({ error: 'no path' });
   const fullPath = sanitizeRelPath(relPath);
@@ -419,7 +495,7 @@ function getVideoDuration(filePath) {
   });
 }
 
-app.get('/files/*', requireAuth, (req, res) => {
+app.get('/files/*', requireAuth, mediaLimiter, (req, res) => {
   const relPath = decodeURIComponent(req.params[0]);
   const fullPath = sanitizeRelPath(relPath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
@@ -427,7 +503,7 @@ app.get('/files/*', requireAuth, (req, res) => {
   res.sendFile(fullPath);
 });
 
-app.get('/thumb/*', requireAuth, async (req, res) => {
+app.get('/thumb/*', requireAuth, mediaLimiter, async (req, res) => {
   const relPath = decodeURIComponent(req.params[0]);
   const fullSrcPath = sanitizeRelPath(relPath);
   if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
@@ -442,7 +518,7 @@ app.get('/thumb/*', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/preview/*', requireAuth, async (req, res) => {
+app.get('/preview/*', requireAuth, mediaLimiter, async (req, res) => {
   const relPath = decodeURIComponent(req.params[0]);
   const fullSrcPath = sanitizeRelPath(relPath);
   if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
@@ -455,14 +531,16 @@ app.get('/preview/*', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/share', requireAuth, (req, res) => {
+app.post('/api/share', requireAuth, shareLimiter, requireCsrf, (req, res) => {
   const { filePath } = req.body;
   if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'bad request' });
   const fullPath = sanitizeRelPath(filePath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).json({ error: 'file not found' });
+  const cfg = loadConfig();
+  const canonical = path.relative(path.resolve(cfg.capturesPath), fullPath).split(path.sep).join('/');
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-  addShare(token, filePath, expiresAt);
+  addShare(token, canonical, expiresAt);
   res.json({ token, url: `/s/${token}`, expiresAt });
 });
 

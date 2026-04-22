@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<link rel="icon" href="data:,">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>stash</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -70,6 +71,7 @@
           <span class="games-search-icon">⌕</span>
           <input type="text" class="games-search" id="gamesSearch" placeholder="search games..." autocomplete="off" spellcheck="false">
         </div>
+        <div class="platform-pills" id="platformPills" style="display:none;"></div>
         <div class="games-count" id="gamesCountLabel"></div>
       </div>
       <div class="games-grid-wrap" id="gamesGrid"></div>
@@ -95,6 +97,8 @@
       <button type="button" class="lb-share" id="lbShare">⤴ EXFIL LINK</button>
       <button type="button" class="lb-close" id="lbClose">×</button>
     </div>
+    <button type="button" class="lb-nav lb-prev" id="lbPrev" hidden>&#8249;</button>
+    <button type="button" class="lb-nav lb-next" id="lbNext" hidden>&#8250;</button>
     <div class="lb-content" id="lbContent"></div>
     <div class="lb-meta" id="lbMeta" style="display:none;">
       <span class="lb-meta-game" id="lbGame"></span>
@@ -170,6 +174,7 @@
     </button>
   </nav>
 
+  <script src="/common.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

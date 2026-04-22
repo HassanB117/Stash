@@ -662,6 +662,35 @@ button.ghost:hover {
 .lb-star:hover { background: rgba(255,255,255,0.15); }
 .lb-star.starred { color: #ffd700; border-color: rgba(255,215,0,0.35); background: rgba(255,215,0,0.07); }
 
+/* ── Lightbox nav arrows ── */
+.lb-nav {
+  position: fixed; top: 50%; transform: translateY(-50%);
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #fff; font-size: 36px; cursor: pointer;
+  width: 48px; height: 64px; z-index: 101;
+  transition: background 0.15s, opacity 0.15s;
+  padding: 0; line-height: 1; clip-path: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.lb-nav:hover { background: rgba(255,255,255,0.18); }
+.lb-prev { left: 12px; }
+.lb-next { right: 12px; }
+
+/* ── Platform filter pills ── */
+.platform-pills {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 8px 0 2px;
+}
+.platform-pill {
+  background: none; border: 1px solid var(--border);
+  color: var(--text-muted); font-family: var(--mono); font-size: 10px;
+  letter-spacing: 2px; padding: 3px 10px; cursor: pointer;
+  transition: all 0.15s; clip-path: none;
+}
+.platform-pill:hover { color: var(--text); border-color: var(--text-muted); }
+.platform-pill.active { color: var(--accent); border-color: var(--accent); }
+
 /* ── Lightbox detail meta ── */
 .lb-meta-detail { color: var(--text-dim); font-size: 10px; }
 
@@ -781,6 +810,28 @@ button.ghost:hover {
 }
 .vplayer-seek-buf  { background: rgba(255,255,255,0.15); }
 .vplayer-seek-fill { background: var(--accent); }
+
+/* ── Video player fullscreen ── */
+.vplayer:fullscreen,
+.vplayer:-webkit-full-screen,
+.vplayer:-moz-full-screen {
+  width: 100vw; height: 100vh; max-width: 100vw;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}
+.vplayer:fullscreen .vplayer-video,
+.vplayer:-webkit-full-screen .vplayer-video,
+.vplayer:-moz-full-screen .vplayer-video {
+  max-width: 100vw;
+  max-height: calc(100vh - 44px);
+  width: auto; height: auto;
+  object-fit: contain;
+}
+.vplayer:fullscreen .vplayer-bar,
+.vplayer:-webkit-full-screen .vplayer-bar,
+.vplayer:-moz-full-screen .vplayer-bar {
+  position: absolute; bottom: 0; left: 0; right: 0;
+}
 
 /* ── Mobile bottom tab bar ─────────────────────────────────────── */
 @keyframes slideUp {
@@ -905,6 +956,7 @@ button.ghost:hover {
   .modal-card::after { display: none; }
 
   /* Lightbox: full-screen column */
+  .lb-nav { display: none; }
   .lightbox {
     padding: 0;
     flex-direction: column;
