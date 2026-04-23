@@ -38,6 +38,7 @@ const captureCache = {
   key: '',
   stamp: 0,
   value: {},
+  inFlight: null,
 };
 const fileMetaCache = new Map();
 
@@ -227,7 +228,25 @@ const shareLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-const mediaLimiter = rateLimit({
+// Thumbnails/previews are the scroll hot path — auth-gated + 24 h client-cached,
+// so the cap is high enough that a gallery scroll through thousands of tiles is fine.
+const thumbLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 5000,
+  message: { error: 'Too many thumbnail requests. Try again later.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
+const fileMetaLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 2000,
+  message: { error: 'Too many metadata requests. Try again later.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
+const fileLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   limit: 1000,
   message: { error: 'Too many media requests. Try again later.' },
@@ -263,47 +282,83 @@ app.get('/api/csrf', (req, res) => {
   res.json({ csrfToken: ensureSessionCsrfToken(req) });
 });
 
-function scanCapturesFromDir(capturesDir) {
-  if (!fs.existsSync(capturesDir)) return {};
+const SCAN_GAME_CONCURRENCY = 8;
 
-  const result = {};
-  const games = fs.readdirSync(capturesDir, { withFileTypes: true }).filter(d => d.isDirectory());
-  for (const game of games) {
-    const gameDir = path.join(capturesDir, game.name);
-    try {
-      const files = fs.readdirSync(gameDir)
-        .filter(f => ALLOWED_EXT.has(path.extname(f).toLowerCase()))
-        .map(f => {
-          const ext = path.extname(f).toLowerCase();
-          const stat = fs.statSync(path.join(gameDir, f));
-          return {
-            name: f,
-            path: `${game.name}/${f}`,
-            type: VIDEO_EXT.has(ext) ? 'video' : 'image',
-            mtime: stat.mtimeMs,
-          };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-      if (files.length > 0) result[game.name] = files;
-    } catch { /* skip */ }
+async function scanCapturesFromDir(capturesDir) {
+  let topEntries;
+  try {
+    topEntries = await fs.promises.readdir(capturesDir, { withFileTypes: true });
+  } catch {
+    return {};
   }
+  const games = topEntries.filter(d => d.isDirectory());
+  const result = {};
+
+  let cursor = 0;
+  async function worker() {
+    while (cursor < games.length) {
+      const game = games[cursor++];
+      const gameDir = path.join(capturesDir, game.name);
+      try {
+        const files = await fs.promises.readdir(gameDir);
+        const candidates = files.filter(f => ALLOWED_EXT.has(path.extname(f).toLowerCase()));
+        const statted = await Promise.all(candidates.map(async f => {
+          try {
+            const ext = path.extname(f).toLowerCase();
+            const stat = await fs.promises.stat(path.join(gameDir, f));
+            return {
+              name: f,
+              path: `${game.name}/${f}`,
+              type: VIDEO_EXT.has(ext) ? 'video' : 'image',
+              mtime: stat.mtimeMs,
+            };
+          } catch { return null; }
+        }));
+        const good = statted.filter(Boolean).sort((a, b) => b.mtime - a.mtime);
+        if (good.length > 0) result[game.name] = good;
+      } catch { /* skip unreadable game dir */ }
+    }
+  }
+
+  const workerCount = Math.min(SCAN_GAME_CONCURRENCY, games.length) || 1;
+  await Promise.all(Array.from({ length: workerCount }, worker));
   return result;
 }
 
 function getCapturesSnapshot(force = false) {
   const cfg = loadConfig();
-  if (!cfg) return {};
+  if (!cfg) return Promise.resolve({});
   const capturesDir = path.resolve(cfg.capturesPath);
   const key = capturesDir;
   const now = Date.now();
   if (!force && captureCache.key === key && (now - captureCache.stamp) < CAPTURE_CACHE_TTL) {
-    return captureCache.value;
+    return Promise.resolve(captureCache.value);
   }
-  const value = scanCapturesFromDir(capturesDir);
-  captureCache.key = key;
-  captureCache.stamp = now;
-  captureCache.value = value;
-  return value;
+  // Coalesce concurrent scans so a burst of requests triggers one scan, not N.
+  if (captureCache.inFlight && captureCache.inFlight.key === key) {
+    return captureCache.inFlight.promise;
+  }
+  let promise;
+  promise = (async () => {
+    try {
+      const value = await scanCapturesFromDir(capturesDir);
+      // Only write the cache if we're still the active in-flight scan.
+      // A concurrent path change or later scan may have taken over; stomping
+      // a fresher result would force an unnecessary rescan next request.
+      if (captureCache.inFlight && captureCache.inFlight.promise === promise) {
+        captureCache.key = key;
+        captureCache.stamp = Date.now();
+        captureCache.value = value;
+      }
+      return value;
+    } finally {
+      if (captureCache.inFlight && captureCache.inFlight.promise === promise) {
+        captureCache.inFlight = null;
+      }
+    }
+  })();
+  captureCache.inFlight = { key, promise };
+  return promise;
 }
 
 // --- Routes ---
@@ -407,7 +462,37 @@ app.post('/logout', requireCsrf, (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
-app.get('/api/captures', requireAuth, (req, res) => res.json(getCapturesSnapshot()));
+app.get('/api/captures', requireAuth, async (req, res) => {
+  try { res.json(await getCapturesSnapshot()); }
+  catch { res.status(500).json({ error: 'scan failed' }); }
+});
+
+app.get('/api/captures/recent', requireAuth, async (req, res) => {
+  let snapshot;
+  try { snapshot = await getCapturesSnapshot(); }
+  catch { return res.status(500).json({ error: 'scan failed' }); }
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const limit  = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 120));
+  const flat = [];
+  for (const [game, files] of Object.entries(snapshot)) {
+    for (const f of files) flat.push(Object.assign({}, f, { game }));
+  }
+  flat.sort((a, b) => b.mtime - a.mtime);
+  res.json({ total: flat.length, items: flat.slice(offset, offset + limit) });
+});
+
+app.get('/api/captures/version', requireAuth, async (req, res) => {
+  let snapshot;
+  try { snapshot = await getCapturesSnapshot(); }
+  catch { return res.status(500).json({ error: 'scan failed' }); }
+  let total = 0;
+  let maxMtime = 0;
+  for (const files of Object.values(snapshot)) {
+    total += files.length;
+    for (const f of files) if (f.mtime > maxMtime) maxMtime = f.mtime;
+  }
+  res.json({ total, games: Object.keys(snapshot).length, maxMtime });
+});
 
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = loadConfig();
@@ -485,7 +570,7 @@ app.post('/api/favorites/toggle', requireAuth, mutationLimiter, requireCsrf, (re
   res.json({ starred });
 });
 
-app.get('/api/file-meta', requireAuth, mediaLimiter, async (req, res) => {
+app.get('/api/file-meta', requireAuth, fileMetaLimiter, async (req, res) => {
   const relPath = req.query.path;
   if (typeof relPath !== 'string' || !relPath) return res.status(400).json({ error: 'no path' });
   const fullPath = sanitizeRelPath(relPath);
@@ -549,7 +634,7 @@ function getVideoDuration(filePath) {
   });
 }
 
-app.get('/files/*', requireAuth, mediaLimiter, (req, res) => {
+app.get('/files/*', requireAuth, fileLimiter, (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
   const fullPath = sanitizeRelPath(relPath);
@@ -558,7 +643,7 @@ app.get('/files/*', requireAuth, mediaLimiter, (req, res) => {
   res.sendFile(fullPath);
 });
 
-app.get('/thumb/*', requireAuth, mediaLimiter, async (req, res) => {
+app.get('/thumb/*', requireAuth, thumbLimiter, async (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
   const fullSrcPath = sanitizeRelPath(relPath);
@@ -574,7 +659,7 @@ app.get('/thumb/*', requireAuth, mediaLimiter, async (req, res) => {
   }
 });
 
-app.get('/preview/*', requireAuth, mediaLimiter, async (req, res) => {
+app.get('/preview/*', requireAuth, thumbLimiter, async (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
   const fullSrcPath = sanitizeRelPath(relPath);
@@ -642,9 +727,13 @@ app.listen(PORT, () => {
   console.log('');
 
   if (isConfigured()) {
-    pregenerate(getCapturesSnapshot(true), sanitizeRelPath);
-    setInterval(function () {
-      pregenerate(getCapturesSnapshot(true), sanitizeRelPath);
+    (async () => {
+      try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath); }
+      catch (err) { console.error('  [startup] initial scan failed:', err.message); }
+    })();
+    setInterval(async () => {
+      try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath); }
+      catch (err) { console.error('  [pregen] scan failed:', err.message); }
     }, 5 * 60 * 1000);
   }
 });

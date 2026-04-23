@@ -7,7 +7,9 @@
   let siteUrl = '';
   let metaCache = {};
   let recentItems = [];
-  let recentVisibleCount = 0;
+  let recentTotal = 0;
+  let renderedRecentCount = 0;
+  let recentLoading = false;
   let lightboxQueue = [];
   let lightboxIndex = -1;
   let platformFilter = 'All';
@@ -95,10 +97,7 @@
   tabGames.addEventListener('click', function () { setTab('games'); });
   tabStarred.addEventListener('click', function () { setTab('starred'); });
   if (recentMoreBtn) {
-    recentMoreBtn.addEventListener('click', function () {
-      recentVisibleCount = Math.min(recentVisibleCount + RECENT_PAGE_SIZE, recentItems.length);
-      renderRecentGrid();
-    });
+    recentMoreBtn.addEventListener('click', function () { loadRecentNextPage(); });
   }
 
   // ── Drilldown helpers ─────────────────────────────────────────────────
@@ -146,42 +145,79 @@
     const res = await fetch('/api/captures');
     if (res.status === 401) { window.location.href = '/login'; return; }
     allCaptures = await res.json();
-    capturesVersion = getCapturesVersion(allCaptures);
     gameMeta = {};
     Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
     renderFilters();
-    renderGrid();
     updateCounts();
     renderPlatformPills();
     renderGamesGrid(Object.keys(allCaptures).sort());
+  }
+
+  async function fetchRecentPage(offset) {
+    try {
+      const res = await fetch('/api/captures/recent?offset=' + offset + '&limit=' + RECENT_PAGE_SIZE);
+      if (res.status === 401) { window.location.href = '/login'; return null; }
+      if (!res.ok) return null;
+      return await res.json();
+    } catch { return null; }
+  }
+
+  async function loadRecent(reset) {
+    if (recentLoading) return;
+    recentLoading = true;
+    try {
+      // Fetch before mutating so a failed reset doesn't wipe state out from
+      // under the DOM. On success we mutate `recentItems` in place so existing
+      // tile click handlers (which close over the array) keep seeing it.
+      const offset = reset ? 0 : recentItems.length;
+      const page = await fetchRecentPage(offset);
+      if (!page) return;
+      if (reset) {
+        recentItems.length = 0;
+        renderedRecentCount = 0;
+      }
+      recentTotal = page.total;
+      for (let i = 0; i < page.items.length; i++) recentItems.push(page.items[i]);
+      renderRecentGrid({ append: !reset });
+      updateCounts();
+    } finally {
+      recentLoading = false;
+    }
+  }
+
+  function loadRecentNextPage() {
+    if (recentItems.length >= recentTotal) return;
+    loadRecent(false);
+  }
+
+  function versionKey(v) {
+    return v.total + ':' + v.games + ':' + v.maxMtime;
+  }
+
+  async function fetchCapturesVersion() {
+    try {
+      const res = await fetch('/api/captures/version');
+      if (!res.ok) return '';
+      return versionKey(await res.json());
+    } catch { return ''; }
   }
 
   function updateCounts() {
     var games = Object.keys(allCaptures);
     var total = 0;
     games.forEach(function (g) { total += allCaptures[g].length; });
-    $('recentCount').textContent = total;
+    // Prefer server-reported Recent total once we've loaded a page; falls back to allCaptures tally
+    var recentCount = recentTotal || total;
+    $('recentCount').textContent = recentCount;
     $('gamesCount').textContent  = games.length;
     $('starredCount').textContent = favorites.size;
     // Mobile tab badges
     var mbr = $('mBadgeRecent');
     if (mbr) {
-      mbr.textContent = total || '';
+      mbr.textContent = recentCount || '';
       $('mBadgeGames').textContent   = games.length || '';
       $('mBadgeStarred').textContent = favorites.size || '';
     }
-  }
-
-  function getCapturesVersion(captures) {
-    var games = Object.keys(captures).sort();
-    var parts = [];
-    games.forEach(function (game) {
-      parts.push(game);
-      captures[game].forEach(function (item) {
-        parts.push(item.path + '|' + item.mtime + '|' + item.type);
-      });
-    });
-    return parts.join('\n');
   }
 
   function escapeHtml(s) {
@@ -232,57 +268,59 @@
       el.addEventListener('click', function () {
         currentFilter = el.dataset.game;
         renderFilters();
-        renderGrid();
       });
     });
   }
 
   // ── Recent grid ───────────────────────────────────────────────────────
-  function buildRecentItems() {
-    var items = [];
-    var games = Object.keys(allCaptures).sort();
-    games.forEach(function (g) {
-      allCaptures[g].forEach(function (f) { items.push(Object.assign({}, f, { game: g })); });
-    });
-    items.sort(function (a, b) { return b.mtime - a.mtime; });
-    return items;
-  }
-
-  function renderRecentGrid() {
+  function renderRecentGrid(opts) {
+    opts = opts || {};
     if (recentItems.length === 0) {
       grid.innerHTML = '<div class="empty">// NO CAPTURES DETECTED</div>';
-      if (recentShownCount) recentShownCount.textContent = '';
-      if (recentMoreBtn) recentMoreBtn.style.display = 'none';
+      renderedRecentCount = 0;
+      updateRecentMoreButton();
       return;
     }
 
-    var scrollTop = grid.scrollTop;
-    var visible = recentItems.slice(0, recentVisibleCount);
-    grid.innerHTML = visible.map(function (item, i) {
-      return renderTileHTML(item, i);
-    }).join('');
-
-    attachTileEvents(grid, visible);
-    grid.scrollTop = scrollTop;
-
-    if (recentShownCount) {
-      recentShownCount.textContent = visible.length + ' / ' + recentItems.length + ' SHOWN';
+    if (!opts.append || renderedRecentCount === 0) {
+      var scrollTop = grid.scrollTop;
+      grid.innerHTML = recentItems.map(function (item, i) {
+        return renderTileHTML(item, i);
+      }).join('');
+      attachTileEvents(grid, recentItems);
+      renderedRecentCount = recentItems.length;
+      grid.scrollTop = scrollTop;
+    } else {
+      var startIdx = renderedRecentCount;
+      var fresh = recentItems.slice(startIdx);
+      if (fresh.length > 0) {
+        var html = fresh.map(function (item, i) {
+          return renderTileHTML(item, startIdx + i);
+        }).join('');
+        grid.insertAdjacentHTML('beforeend', html);
+        // attachTileEvents is idempotent (marks bound tiles), so new tiles get handlers
+        attachTileEvents(grid, recentItems);
+        renderedRecentCount = recentItems.length;
+      }
     }
-    if (recentMoreBtn) {
-      var moreLeft = recentVisibleCount < recentItems.length;
-      recentMoreBtn.style.display = moreLeft ? '' : 'none';
-      recentMoreBtn.disabled = !moreLeft;
-      recentMoreBtn.textContent = moreLeft ? 'LOAD MORE' : 'ALL LOADED';
-    }
+
+    updateRecentMoreButton();
   }
 
-  function renderGrid() {
-    recentItems = buildRecentItems();
-    // Preserve how many items the user has loaded; only reset on first call (count=0)
-    recentVisibleCount = recentVisibleCount > 0
-      ? Math.min(recentVisibleCount, recentItems.length)
-      : Math.min(RECENT_PAGE_SIZE, recentItems.length);
-    renderRecentGrid();
+  function updateRecentMoreButton() {
+    if (recentShownCount) {
+      if (recentItems.length === 0) {
+        recentShownCount.textContent = '';
+      } else {
+        recentShownCount.textContent = recentItems.length + ' / ' + recentTotal + ' SHOWN';
+      }
+    }
+    if (recentMoreBtn) {
+      var moreLeft = recentItems.length < recentTotal;
+      recentMoreBtn.style.display = moreLeft ? '' : 'none';
+      recentMoreBtn.disabled = !moreLeft || recentLoading;
+      recentMoreBtn.textContent = moreLeft ? 'LOAD MORE' : 'ALL LOADED';
+    }
   }
 
   // ── Starred grid ──────────────────────────────────────────────────────
@@ -339,6 +377,8 @@
 
   function attachTileEvents(container, items) {
     container.querySelectorAll('.tile').forEach(function (tile) {
+      if (tile.dataset.tileBound) return;
+      tile.dataset.tileBound = '1';
       var idx  = parseInt(tile.dataset.index, 10);
       var item = items[idx];
 
@@ -379,7 +419,11 @@
       tile.addEventListener('click', function () { openLightbox(item, items, idx); });
     });
     if (durObserver) {
-      container.querySelectorAll('[data-dur-badge]').forEach(function (b) { durObserver.observe(b); });
+      container.querySelectorAll('[data-dur-badge]').forEach(function (b) {
+        if (b.dataset.durObserved) return;
+        b.dataset.durObserved = '1';
+        durObserver.observe(b);
+      });
     }
   }
 
@@ -520,7 +564,10 @@
 
   function openLightbox(item, queue, idx) {
     currentItem = item;
-    lightboxQueue = queue || [];
+    // Snapshot the queue: Recent tiles pass the live `recentItems` array, which
+    // the poll/settings reset mutates in place. Without the copy, pressing arrow
+    // keys mid-refresh navigates an empty/reshuffled queue.
+    lightboxQueue = queue ? queue.slice() : [];
     lightboxIndex = (idx !== undefined) ? idx : -1;
 
     var fileUrl = '/files/' + encodeURIComponent(item.path);
@@ -687,7 +734,8 @@
         msg.textContent = '✓ PATH UPDATED';
         msg.className = 'settings-msg ok';
         await loadConfig();
-        await loadCaptures();
+        await Promise.all([loadCaptures(), loadRecent(true)]);
+        capturesVersion = await fetchCapturesVersion();
       } else {
         msg.textContent = '✗ ' + (data.error || 'failed');
         msg.className = 'settings-msg bad';
@@ -741,25 +789,21 @@
   // ── Init ───────────────────────────────────────────────────────────────
   (async function () {
     await Promise.all([loadConfig(), loadFavorites()]);
-    await loadCaptures();
+    await Promise.all([loadCaptures(), loadRecent(true)]);
+    capturesVersion = await fetchCapturesVersion();
 
     setInterval(async function () {
       try {
-        var res = await fetch('/api/captures');
+        var res = await fetch('/api/captures/version');
         if (!res.ok) return;
-        var newCaptures = await res.json();
-        var newVersion = getCapturesVersion(newCaptures);
-        if (newVersion !== capturesVersion) {
-          allCaptures = newCaptures;
-          capturesVersion = newVersion;
-          gameMeta = {};
-          Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
-          renderFilters();
-          renderGrid();
-          updateCounts();
-          renderPlatformPills();
-          renderGamesGrid(Object.keys(allCaptures).sort());
-        }
+        var newVersion = versionKey(await res.json());
+        if (newVersion === capturesVersion) return;
+        // Refetch full library for Games/Starred tabs, plus reset Recent to page 0.
+        // Only advance `capturesVersion` after success so a failed reload retries
+        // on the next tick instead of pinning us to a version we never loaded.
+        await Promise.all([loadCaptures(), loadRecent(true)]);
+        capturesVersion = newVersion;
+        if (panelStarred.classList.contains('active')) renderStarredGrid();
       } catch {}
     }, 30000);
   })();
