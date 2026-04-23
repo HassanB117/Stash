@@ -49,11 +49,30 @@ function pruneFileMetaCache() {
 }
 
 // --- Config ---
+let configCache = null;
+let configCacheMtime = 0;
 function loadConfig() {
-  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
-  catch { return null; }
+  try {
+    const mt = fs.statSync(CONFIG_FILE).mtimeMs;
+    if (configCache && configCacheMtime === mt) return configCache;
+    const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    configCache = parsed;
+    configCacheMtime = mt;
+    return parsed;
+  } catch {
+    configCache = null;
+    configCacheMtime = 0;
+    return null;
+  }
 }
-function saveConfig(cfg) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2)); }
+function saveConfig(cfg) {
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  configCache = cfg;
+  try { configCacheMtime = fs.statSync(CONFIG_FILE).mtimeMs; } catch {}
+}
+function safeDecodeURI(s) {
+  try { return decodeURIComponent(s); } catch { return null; }
+}
 function isConfigured() {
   const cfg = loadConfig();
   return cfg && cfg.username && cfg.passwordHash && cfg.capturesPath;
@@ -102,7 +121,7 @@ function loadFavorites() {
     return parsed
       .filter(v => typeof v === 'string' && v.trim())
       .map(v => {
-        const full = sanitizeRelPath(v);
+        const full = sanitizeRelPath(v, cfg);
         if (!full) return v.replace(/\\/g, '/');
         return path.relative(capturesDir, full).split(path.sep).join('/');
       });
@@ -122,19 +141,28 @@ function getShare(token) {
   if (!row || row.expires_at < Date.now()) return null;
   return row;
 }
-function addShare(token, filePath, expiresAt) {
+function addShare(token, filePath, absPath, expiresAt) {
   const shares = loadShares();
-  shares[token] = { file_path: filePath, expires_at: expiresAt, created_at: Date.now() };
+  shares[token] = {
+    file_path: filePath,
+    abs_path: absPath,
+    expires_at: expiresAt,
+    created_at: Date.now(),
+  };
   saveShares(shares);
 }
-setInterval(() => {
+const sharesCleanupTimer = setInterval(() => {
+  if (!fs.existsSync(SHARES_FILE)) return;
   const shares = loadShares();
+  const keys = Object.keys(shares);
+  if (keys.length === 0) return;
   let changed = false;
-  for (const t of Object.keys(shares)) {
+  for (const t of keys) {
     if (shares[t].expires_at < Date.now()) { delete shares[t]; changed = true; }
   }
   if (changed) saveShares(shares);
 }, 60 * 60 * 1000);
+sharesCleanupTimer.unref();
 
 // --- Middleware ---
 // Helmet with CSP that allows our own scripts.
@@ -155,6 +183,12 @@ app.use(helmet({
 
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: false, limit: '10kb' }));
+// HTML files are only served via explicit routes (which apply auth/redirects);
+// block direct fetches like /index.html that would bypass the redirect logic.
+app.use((req, res, next) => {
+  if (/\.html$/i.test(req.path)) return res.status(404).send('not found');
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: '1h' }));
 
 app.use(session({
@@ -202,9 +236,10 @@ const mediaLimiter = rateLimit({
 });
 
 // --- Helpers ---
-function sanitizeRelPath(relPath) {
-  const cfg = loadConfig();
-  if (!cfg) return null;
+function sanitizeRelPath(relPath, cfg) {
+  if (typeof relPath !== 'string') return null;
+  cfg = cfg || loadConfig();
+  if (!cfg || !cfg.capturesPath) return null;
   const capturesDir = path.resolve(cfg.capturesPath);
   const normalized = path.normalize(relPath).replace(/^(\.\.[\/\\])+/, '');
   const fullPath = path.resolve(capturesDir, normalized);
@@ -320,19 +355,27 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
 
   const passwordHash = await bcrypt.hash(password, 12);
   const sessionSecret = getSessionSecret();
-  try {
-    fs.writeFileSync(SESSION_SECRET_FILE, sessionSecret, { mode: 0o600 });
-  } catch {}
-  captureCache.stamp = 0;
-  captureCache.key = '';
-  captureCache.value = {};
-  saveConfig({
+  // Re-check after the async bcrypt: another concurrent setup request may have completed
+  // while we were hashing. Use the wx flag for a defensive atomic-create.
+  if (isConfigured()) return res.status(409).json({ error: 'already configured' });
+  const cfg = {
     username: username.trim(),
     passwordHash,
     capturesPath: path.resolve(capturesPath),
     sessionSecret,
     createdAt: Date.now(),
-  });
+  };
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { flag: 'wx' });
+  } catch (e) {
+    if (e && e.code === 'EEXIST') return res.status(409).json({ error: 'already configured' });
+    return res.status(500).json({ error: 'failed to save config' });
+  }
+  configCache = cfg;
+  try { configCacheMtime = fs.statSync(CONFIG_FILE).mtimeMs; } catch {}
+  captureCache.stamp = 0;
+  captureCache.key = '';
+  captureCache.value = {};
   res.json({ ok: true });
 });
 
@@ -346,7 +389,12 @@ app.post('/login', loginLimiter, requireCsrf, async (req, res) => {
   if (!isConfigured()) return res.status(400).json({ error: 'setup not complete' });
   const cfg = loadConfig();
   const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'missing fields' });
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+    return res.status(400).json({ error: 'missing fields' });
+  }
+  if (!cfg.passwordHash || typeof cfg.passwordHash !== 'string') {
+    return res.status(500).json({ error: 'config corrupted' });
+  }
   const userOk = username === cfg.username;
   const passOk = await bcrypt.compare(password, cfg.passwordHash);
   if (!userOk || !passOk) return res.status(401).json({ error: 'wrong username or password' });
@@ -390,8 +438,11 @@ app.post('/api/config/url', requireAuth, mutationLimiter, requireCsrf, (req, res
   let { siteUrl } = req.body;
   if (siteUrl && typeof siteUrl === 'string' && siteUrl.trim()) {
     siteUrl = siteUrl.trim().replace(/\/$/, '');
-    try { new URL(siteUrl); } catch { return res.status(400).json({ error: 'invalid URL' }); }
-    if (!siteUrl.startsWith('http')) return res.status(400).json({ error: 'URL must start with http' });
+    let parsed;
+    try { parsed = new URL(siteUrl); } catch { return res.status(400).json({ error: 'invalid URL' }); }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return res.status(400).json({ error: 'URL must use http or https' });
+    }
   } else {
     siteUrl = '';
   }
@@ -404,10 +455,11 @@ app.post('/api/config/url', requireAuth, mutationLimiter, requireCsrf, (req, res
 app.post('/api/config/password', requireAuth, mutationLimiter, requireCsrf, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const cfg = loadConfig();
-  if (!await bcrypt.compare(currentPassword || '', cfg.passwordHash)) {
+  const current = typeof currentPassword === 'string' ? currentPassword : '';
+  if (!await bcrypt.compare(current, cfg.passwordHash)) {
     return res.status(401).json({ error: 'current password wrong' });
   }
-  if (!newPassword || newPassword.length < 8) {
+  if (typeof newPassword !== 'string' || newPassword.length < 8) {
     return res.status(400).json({ error: 'new password must be 8+ characters' });
   }
   cfg.passwordHash = await bcrypt.hash(newPassword, 12);
@@ -435,7 +487,7 @@ app.post('/api/favorites/toggle', requireAuth, mutationLimiter, requireCsrf, (re
 
 app.get('/api/file-meta', requireAuth, mediaLimiter, async (req, res) => {
   const relPath = req.query.path;
-  if (!relPath) return res.status(400).json({ error: 'no path' });
+  if (typeof relPath !== 'string' || !relPath) return res.status(400).json({ error: 'no path' });
   const fullPath = sanitizeRelPath(relPath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).json({ error: 'not found' });
 
@@ -485,18 +537,21 @@ function getVideoDuration(filePath) {
       if (err) return reject(err);
       try {
         const data = JSON.parse(stdout);
-        const dur = parseFloat(
-          (data.format && data.format.duration) ||
-          (data.streams && data.streams.find(s => s.codec_type === 'video') || {}).duration
-        );
-        resolve(isNaN(dur) ? null : dur);
+        const fmtDur = data.format && data.format.duration;
+        const videoStream = Array.isArray(data.streams)
+          ? data.streams.find(s => s && s.codec_type === 'video')
+          : null;
+        const streamDur = videoStream && videoStream.duration;
+        const dur = parseFloat(fmtDur || streamDur);
+        resolve(Number.isFinite(dur) ? dur : null);
       } catch { reject(new Error('parse error')); }
     });
   });
 }
 
 app.get('/files/*', requireAuth, mediaLimiter, (req, res) => {
-  const relPath = decodeURIComponent(req.params[0]);
+  const relPath = safeDecodeURI(req.params[0]);
+  if (relPath == null) return res.status(400).send('bad path');
   const fullPath = sanitizeRelPath(relPath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
   res.set('Cache-Control', 'private, max-age=3600');
@@ -504,7 +559,8 @@ app.get('/files/*', requireAuth, mediaLimiter, (req, res) => {
 });
 
 app.get('/thumb/*', requireAuth, mediaLimiter, async (req, res) => {
-  const relPath = decodeURIComponent(req.params[0]);
+  const relPath = safeDecodeURI(req.params[0]);
+  if (relPath == null) return res.status(400).send('bad path');
   const fullSrcPath = sanitizeRelPath(relPath);
   if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
   const ext = path.extname(relPath).toLowerCase();
@@ -519,7 +575,8 @@ app.get('/thumb/*', requireAuth, mediaLimiter, async (req, res) => {
 });
 
 app.get('/preview/*', requireAuth, mediaLimiter, async (req, res) => {
-  const relPath = decodeURIComponent(req.params[0]);
+  const relPath = safeDecodeURI(req.params[0]);
+  if (relPath == null) return res.status(400).send('bad path');
   const fullSrcPath = sanitizeRelPath(relPath);
   if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
   try {
@@ -540,7 +597,7 @@ app.post('/api/share', requireAuth, shareLimiter, requireCsrf, (req, res) => {
   const canonical = path.relative(path.resolve(cfg.capturesPath), fullPath).split(path.sep).join('/');
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-  addShare(token, canonical, expiresAt);
+  addShare(token, canonical, fullPath, expiresAt);
   const relUrl = `/s/${token}`;
   res.json({ token, url: cfg.siteUrl ? `${cfg.siteUrl}${relUrl}` : relUrl, expiresAt });
 });
@@ -554,7 +611,10 @@ app.get('/s/:token', (req, res) => {
 app.get('/s/:token/file', (req, res) => {
   const row = getShare(req.params.token);
   if (!row) return res.status(404).send('expired');
-  const fullPath = sanitizeRelPath(row.file_path);
+  // Prefer the absolute path pinned at share creation (tolerates capturesPath changes).
+  // Fall back to re-resolving legacy share records.
+  let fullPath = row.abs_path && typeof row.abs_path === 'string' ? row.abs_path : null;
+  if (!fullPath) fullPath = sanitizeRelPath(row.file_path);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
   res.sendFile(fullPath);
 });

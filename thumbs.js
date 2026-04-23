@@ -51,18 +51,30 @@ async function makeImageThumb(src, dest) {
 }
 
 // ── Video thumbnail (single frame) ───────────────────────────────────
-async function makeVideoThumb(src, dest) {
-  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+function runVideoThumbFfmpeg(src, dest, seekSeconds) {
+  const args = [];
+  if (seekSeconds > 0) args.push('-ss', String(seekSeconds));
+  args.push(
+    '-i', src,
+    '-frames:v', '1',
+    '-vf', `scale=${SIZE}:-2`,
+    '-y', dest,
+  );
   return new Promise((resolve, reject) => {
-    execFile('ffmpeg', [
-      '-ss', '1', '-i', src,
-      '-frames:v', '1',
-      '-vf', `scale=${SIZE}:-2`,
-      '-y', dest,
-    ], { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }, err => {
+    execFile('ffmpeg', args, { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }, err => {
       if (err) reject(err); else resolve();
     });
   });
+}
+
+async function makeVideoThumb(src, dest) {
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+  try {
+    await runVideoThumbFfmpeg(src, dest, 1);
+  } catch (err) {
+    // Clip may be shorter than 1s — retry grabbing the first frame.
+    await runVideoThumbFfmpeg(src, dest, 0);
+  }
 }
 
 // ── Video preview clip (2 s, low-res, with terminal progress bar) ─────

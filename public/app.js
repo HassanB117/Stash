@@ -339,7 +339,7 @@
 
   function attachTileEvents(container, items) {
     container.querySelectorAll('.tile').forEach(function (tile) {
-      var idx  = parseInt(tile.dataset.index);
+      var idx  = parseInt(tile.dataset.index, 10);
       var item = items[idx];
 
       var starBtn = tile.querySelector('.tile-star');
@@ -554,7 +554,11 @@
 
   function closeLightbox() {
     var vid = lbContent.querySelector('.vplayer-video');
-    if (vid) { vid.pause(); vid.src = ''; }
+    if (vid) {
+      vid.pause();
+      vid.removeAttribute('src');
+      try { vid.load(); } catch (e) {}
+    }
     if (document.fullscreenElement) document.exitFullscreen();
     lightbox.classList.remove('open');
     lbContent.innerHTML = '';
