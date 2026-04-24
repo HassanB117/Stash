@@ -22,7 +22,8 @@
     <div class="steps">
       <div class="step active current" data-step="1">01 · ACCOUNT</div>
       <div class="step" data-step="2">02 · FOLDER</div>
-      <div class="step" data-step="3">03 · DONE</div>
+      <div class="step" data-step="3">03 · RENDER</div>
+      <div class="step" data-step="4">04 · DONE</div>
     </div>
 
     <!-- Step 1: Account -->
@@ -56,12 +57,42 @@
       <div class="error" id="error-2"></div>
       <div class="actions">
         <button type="button" class="ghost" id="back-2">← BACK</button>
-        <button type="button" class="primary" id="next-2">INITIALIZE →</button>
+        <button type="button" class="primary" id="next-2">NEXT →</button>
       </div>
     </div>
 
-    <!-- Step 3: Done -->
+    <!-- Step 3: Render mode -->
     <div class="step-panel" id="panel-3">
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-bottom:4px;">// PICK RENDER ENGINE</div>
+      <div class="field">
+        <label>thumbnail & preview rendering</label>
+        <div class="render-mode-options">
+          <label class="render-mode-option">
+            <input type="radio" name="renderMode" value="cpu" checked>
+            <div>
+              <div class="render-mode-title">CPU (software)</div>
+              <div class="render-mode-desc">works everywhere · slower on large video libraries</div>
+            </div>
+          </label>
+          <label class="render-mode-option">
+            <input type="radio" name="renderMode" value="gpu">
+            <div>
+              <div class="render-mode-title">GPU (auto-detect)</div>
+              <div class="render-mode-desc">uses NVENC / QSV / AMF if available · falls back to CPU otherwise</div>
+            </div>
+          </label>
+        </div>
+        <div class="hint">you can change this later from settings.</div>
+      </div>
+      <div class="error" id="error-3"></div>
+      <div class="actions">
+        <button type="button" class="ghost" id="back-3">← BACK</button>
+        <button type="button" class="primary" id="next-3">INITIALIZE →</button>
+      </div>
+    </div>
+
+    <!-- Step 4: Done -->
+    <div class="step-panel" id="panel-4">
       <div class="success-icon">✓</div>
       <div class="success-msg">SYSTEM READY</div>
       <div class="success-sub">archive initialized</div>

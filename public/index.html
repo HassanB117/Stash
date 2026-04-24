@@ -39,6 +39,7 @@
         <div class="status-dot"></div>
         LIVE
       </div>
+      <button type="button" class="ghost" id="refreshBtn">REFRESH</button>
       <button type="button" class="ghost" id="settingsBtn">SETTINGS</button>
       <button type="button" class="ghost" id="logoutBtn">LOGOUT</button>
     </div>
@@ -147,6 +148,30 @@
           <button type="button" id="savePassBtn">CHANGE</button>
         </div>
         <div class="settings-msg" id="passMsg"></div>
+      </div>
+
+      <div class="settings-section">
+        <label>// RENDER MODE</label>
+        <div class="render-mode-options" id="renderModeOptions">
+          <label class="render-mode-option">
+            <input type="radio" name="settingsRenderMode" value="cpu">
+            <div>
+              <div class="render-mode-title">CPU (software)</div>
+              <div class="render-mode-desc">works everywhere</div>
+            </div>
+          </label>
+          <label class="render-mode-option">
+            <input type="radio" name="settingsRenderMode" value="gpu">
+            <div>
+              <div class="render-mode-title">GPU <span id="gpuLabel" class="render-mode-hint">auto-detect</span></div>
+              <div class="render-mode-desc" id="gpuDesc">uses NVENC / QSV / AMF if available</div>
+            </div>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="saveRenderBtn">APPLY</button>
+        </div>
+        <div class="settings-msg" id="renderMsg"></div>
       </div>
 
       <div class="modal-actions" style="margin-top:20px;">

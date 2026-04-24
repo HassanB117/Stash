@@ -95,7 +95,11 @@
 
     function fmt(s) {
       s = Math.floor(s || 0);
-      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      var h = Math.floor(s / 3600);
+      var m = Math.floor((s % 3600) / 60);
+      var r = s % 60;
+      if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
+      return m + ':' + String(r).padStart(2, '0');
     }
 
     function reveal() {

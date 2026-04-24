@@ -1,5 +1,6 @@
 (function () {
   var account = {};
+  var folder = '';
 
   function goTo(n) {
     document.querySelectorAll('.step-panel').forEach(function (p) { p.classList.remove('active'); });
@@ -41,16 +42,36 @@
       var cd = await check.json();
       if (!cd.ok) { status.textContent = ''; err.textContent = cd.error || 'invalid path'; return; }
       status.textContent = '✓ ' + cd.resolved;
-      var res  = await fetch('/api/setup/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: account.username, password: account.password, capturesPath: fp }),
-      });
-      var data = await res.json();
-      if (res.ok) { goTo(3); }
-      else { status.textContent = ''; err.textContent = data.error || 'setup failed'; }
+      folder = fp;
+      goTo(3);
     } catch {
       status.textContent = '';
+      err.textContent = 'network error';
+    }
+  });
+
+  document.getElementById('back-3').addEventListener('click', function () { goTo(2); });
+
+  document.getElementById('next-3').addEventListener('click', async function () {
+    var err = document.getElementById('error-3');
+    err.textContent = '';
+    var picked = document.querySelector('input[name="renderMode"]:checked');
+    var mode = picked ? picked.value : 'cpu';
+    try {
+      var res = await fetch('/api/setup/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: account.username,
+          password: account.password,
+          capturesPath: folder,
+          renderMode: mode,
+        }),
+      });
+      var data = await res.json();
+      if (res.ok) { goTo(4); }
+      else { err.textContent = data.error || 'setup failed'; }
+    } catch {
       err.textContent = 'network error';
     }
   });

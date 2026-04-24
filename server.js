@@ -7,11 +7,27 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
-const { ensureThumb, ensurePreview, pregenerate, getImageMeta } = require('./thumbs');
-let sharp; try { sharp = require('sharp'); } catch {}
+const term = require('./term');
+const { pregenerate, getImageMeta, setRenderMode, getRenderCapabilities, clearVideoPreviews, thumbAbsPath, previewAbsPath } = require('./thumbs');
 
 const app = express();
 const PORT = process.env.PORT || 7117;
+
+function readPositiveIntEnv(name, fallback) {
+  const raw = process.env[name];
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function readBooleanEnv(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const lower = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'on', 'yes'].includes(lower)) return true;
+  if (['0', 'false', 'off', 'no'].includes(lower)) return false;
+  return fallback;
+}
+
 function getTrustProxySetting() {
   const raw = process.env.TRUST_PROXY;
   if (raw === undefined || raw === '') return 1;
@@ -32,8 +48,10 @@ const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov']);
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const CAPTURE_CACHE_TTL = Number(process.env.CAPTURE_CACHE_TTL || 5000);
-const FILE_META_CACHE_LIMIT = Number(process.env.FILE_META_CACHE_LIMIT || 500);
+const CAPTURE_CACHE_TTL = readPositiveIntEnv('CAPTURE_CACHE_TTL', 5000);
+const FILE_META_CACHE_LIMIT = readPositiveIntEnv('FILE_META_CACHE_LIMIT', 500);
+const PREGENERATE_THUMBS = readBooleanEnv('PREGENERATE_THUMBS', true);
+const PREGENERATE_THUMBS_LIMIT = readPositiveIntEnv('PREGENERATE_THUMBS_LIMIT', Infinity);
 const captureCache = {
   key: '',
   stamp: 0,
@@ -228,7 +246,7 @@ const shareLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Thumbnails/previews are the scroll hot path — auth-gated + 24 h client-cached,
+// Thumbnails/previews are the scroll hot path - auth-gated + 24 h client-cached,
 // so the cap is high enough that a gallery scroll through thousands of tiles is fine.
 const thumbLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -278,6 +296,30 @@ function requireSetupNotDone(req, res, next) {
   next();
 }
 
+function isTruthyFlag(value) {
+  if (value === undefined || value === null) return false;
+  return ['1', 'true', 'on', 'yes'].includes(String(value).trim().toLowerCase());
+}
+
+function shouldForceRefresh(req) {
+  return isTruthyFlag(req.query.refresh) || isTruthyFlag(req.query.force);
+}
+
+function printStartupBanner() {
+  const configured = isConfigured();
+  const url = `http://localhost:${PORT}`;
+
+  term.writeLine('');
+  term.writeLine('  ' + term.accent('STASH'));
+  term.writeLine('  ' + term.muted('-----'));
+  term.writeLine('  ' + term.muted('URL    ') + term.accent(url));
+  term.writeLine(
+    '  ' + term.muted(configured ? 'STATUS ' : 'SETUP  ') +
+    (configured ? term.success('archive online') : term.warn('first run - open the URL to set up'))
+  );
+  term.writeLine('');
+}
+
 app.get('/api/csrf', (req, res) => {
   res.json({ csrfToken: ensureSessionCsrfToken(req) });
 });
@@ -306,6 +348,7 @@ async function scanCapturesFromDir(capturesDir) {
           try {
             const ext = path.extname(f).toLowerCase();
             const stat = await fs.promises.stat(path.join(gameDir, f));
+            if (!stat.isFile()) return null;
             return {
               name: f,
               path: `${game.name}/${f}`,
@@ -391,8 +434,9 @@ app.post('/api/setup/check-path', requireSetupNotDone, requireCsrf, (req, res) =
 });
 
 app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, res) => {
-  const { username, password, capturesPath } = req.body;
+  const { username, password, capturesPath, renderMode } = req.body;
   if (!username || !password || !capturesPath) return res.status(400).json({ error: 'all fields required' });
+  const mode = renderMode === 'gpu' ? 'gpu' : 'cpu';
   if (typeof username !== 'string' || username.length < 2 || username.length > 32) {
     return res.status(400).json({ error: 'username must be 2-32 characters' });
   }
@@ -418,6 +462,7 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
     passwordHash,
     capturesPath: path.resolve(capturesPath),
     sessionSecret,
+    renderMode: mode,
     createdAt: Date.now(),
   };
   try {
@@ -431,6 +476,7 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
   captureCache.stamp = 0;
   captureCache.key = '';
   captureCache.value = {};
+  setRenderMode(mode);
   res.json({ ok: true });
 });
 
@@ -462,41 +508,116 @@ app.post('/logout', requireCsrf, (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
-app.get('/api/captures', requireAuth, async (req, res) => {
-  try { res.json(await getCapturesSnapshot()); }
+app.get('/api/captures', requireAuth, (req, res, next) => {
+  if (shouldForceRefresh(req)) return mutationLimiter(req, res, next);
+  next();
+}, async (req, res) => {
+  try { res.json(await getCapturesSnapshot(shouldForceRefresh(req))); }
   catch { res.status(500).json({ error: 'scan failed' }); }
 });
 
-app.get('/api/captures/recent', requireAuth, async (req, res) => {
+app.get('/api/captures/recent', requireAuth, (req, res, next) => {
+  if (shouldForceRefresh(req)) return mutationLimiter(req, res, next);
+  next();
+}, async (req, res) => {
   let snapshot;
-  try { snapshot = await getCapturesSnapshot(); }
+  try { snapshot = await getCapturesSnapshot(shouldForceRefresh(req)); }
   catch { return res.status(500).json({ error: 'scan failed' }); }
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const limit  = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 120));
-  const flat = [];
-  for (const [game, files] of Object.entries(snapshot)) {
-    for (const f of files) flat.push(Object.assign({}, f, { game }));
+
+  const gameEntries = Object.entries(snapshot);
+  let totalCount = 0;
+  // cursors[i] = index of next item in gameEntries[i][1]
+  const cursors = new Array(gameEntries.length).fill(0);
+  for (const [, files] of gameEntries) totalCount += files.length;
+
+  const result = [];
+  const targetCount = Math.min(totalCount, offset + limit);
+
+  for (let n = 0; n < targetCount; n++) {
+    let bestGameIdx = -1;
+    let bestMtime = -1;
+
+    for (let i = 0; i < gameEntries.length; i++) {
+      const files = gameEntries[i][1];
+      const cur = cursors[i];
+      if (cur < files.length) {
+        if (files[cur].mtime > bestMtime) {
+          bestMtime = files[cur].mtime;
+          bestGameIdx = i;
+        }
+      }
+    }
+
+    if (bestGameIdx === -1) break;
+
+    if (n >= offset) {
+      const item = gameEntries[bestGameIdx][1][cursors[bestGameIdx]];
+      result.push(Object.assign({}, item, { game: gameEntries[bestGameIdx][0] }));
+    }
+    cursors[bestGameIdx]++;
   }
-  flat.sort((a, b) => b.mtime - a.mtime);
-  res.json({ total: flat.length, items: flat.slice(offset, offset + limit) });
+
+  res.json({ total: totalCount, items: result });
 });
 
 app.get('/api/captures/version', requireAuth, async (req, res) => {
   let snapshot;
-  try { snapshot = await getCapturesSnapshot(); }
+  try { snapshot = await getCapturesSnapshot(shouldForceRefresh(req)); }
   catch { return res.status(500).json({ error: 'scan failed' }); }
   let total = 0;
   let maxMtime = 0;
   for (const files of Object.values(snapshot)) {
     total += files.length;
-    for (const f of files) if (f.mtime > maxMtime) maxMtime = f.mtime;
+    if (files.length > 0 && files[0].mtime > maxMtime) maxMtime = files[0].mtime;
   }
   res.json({ total, games: Object.keys(snapshot).length, maxMtime });
 });
 
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = loadConfig();
-  res.json({ username: cfg.username, capturesPath: cfg.capturesPath, siteUrl: cfg.siteUrl || '' });
+  res.json({
+    username: cfg.username,
+    capturesPath: cfg.capturesPath,
+    siteUrl: cfg.siteUrl || '',
+    renderMode: cfg.renderMode || 'cpu',
+  });
+});
+
+app.get('/api/render-capabilities', requireAuth, async (req, res) => {
+  const cfg = loadConfig();
+  try {
+    const caps = await getRenderCapabilities();
+    res.json({
+      available: caps.available.map((e) => ({ name: e.name, label: e.label })),
+      best: caps.best ? { name: caps.best.name, label: caps.best.label } : null,
+      current: cfg.renderMode || 'cpu',
+    });
+  } catch {
+    res.status(500).json({ error: 'probe failed' });
+  }
+});
+
+app.post('/api/config/render-mode', requireAuth, mutationLimiter, requireCsrf, async (req, res) => {
+  const { mode } = req.body;
+  if (mode !== 'cpu' && mode !== 'gpu') return res.status(400).json({ error: 'mode must be cpu or gpu' });
+  const cfg = loadConfig();
+  const changed = (cfg.renderMode || 'cpu') !== mode;
+  cfg.renderMode = mode;
+  saveConfig(cfg);
+  setRenderMode(mode);
+  term.logInfo('render', `mode set to ${mode}`);
+  res.json({ ok: true, mode, rerendering: changed });
+  if (changed) {
+    try {
+      const removed = await clearVideoPreviews();
+      term.logInfo('render', `cleared ${removed} cached preview(s) - regenerating with ${mode}`);
+      pregenerate(await getCapturesSnapshot(true), sanitizeRelPath);
+    } catch (err) {
+      term.logError('render', `regenerate after mode switch failed: ${err.message}`);
+    }
+  }
 });
 
 app.post('/api/config/path', requireAuth, mutationLimiter, requireCsrf, (req, res) => {
@@ -598,10 +719,10 @@ app.get('/api/file-meta', requireAuth, fileMetaLimiter, async (req, res) => {
           meta.duration = m + ':' + String(s).padStart(2, '0');
         }
       } catch {}
-    } else if (sharp) {
+    } else {
       try {
         const info = await getImageMeta(fullPath);
-        if (info) meta.dimensions = info.width + '×' + info.height;
+        if (info) meta.dimensions = info.width + 'x' + info.height;
       } catch {}
     }
 
@@ -643,34 +764,30 @@ app.get('/files/*', requireAuth, fileLimiter, (req, res) => {
   res.sendFile(fullPath);
 });
 
-app.get('/thumb/*', requireAuth, thumbLimiter, async (req, res) => {
+// Thumbnail and preview routes serve only files that were already rendered
+// by pregenerate (at startup, on the 5-minute rescan, or after a mode switch).
+// On-demand rendering was removed per user request — everything renders at
+// launch. Files added between scans return 404 until the next pregen pass.
+app.get('/thumb/*', requireAuth, thumbLimiter, (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
   const fullSrcPath = sanitizeRelPath(relPath);
   if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
-  const ext = path.extname(relPath).toLowerCase();
-  const isVideo = VIDEO_EXT.has(ext);
-  try {
-    const dest = await ensureThumb(relPath, fullSrcPath, isVideo);
-    res.set('Cache-Control', 'private, max-age=86400');
-    res.sendFile(dest);
-  } catch {
-    res.status(404).send('thumbnail not available');
-  }
+  const dest = thumbAbsPath(relPath);
+  if (!fs.existsSync(dest)) return res.status(404).send('thumbnail not ready');
+  res.set('Cache-Control', 'private, max-age=86400');
+  res.sendFile(dest);
 });
 
-app.get('/preview/*', requireAuth, thumbLimiter, async (req, res) => {
+app.get('/preview/*', requireAuth, thumbLimiter, (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
   const fullSrcPath = sanitizeRelPath(relPath);
   if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
-  try {
-    const dest = await ensurePreview(relPath, fullSrcPath);
-    res.set('Cache-Control', 'private, max-age=86400');
-    res.sendFile(dest);
-  } catch {
-    res.status(404).send('preview not available');
-  }
+  const dest = previewAbsPath(relPath);
+  if (!fs.existsSync(dest)) return res.status(404).send('preview not ready');
+  res.set('Cache-Control', 'private, max-age=86400');
+  res.sendFile(dest);
 });
 
 app.post('/api/share', requireAuth, shareLimiter, requireCsrf, (req, res) => {
@@ -716,24 +833,23 @@ app.get('/s/:token/meta', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('');
-  console.log('  ┌─────────────────────────────────────────────┐');
-  console.log(`  │  stash running                   │`);
-  console.log(`  │  → http://localhost:${PORT}                     │`);
-  if (!isConfigured()) {
-    console.log('  │  first run — open the URL to set up         │');
-  }
-  console.log('  └─────────────────────────────────────────────┘');
-  console.log('');
+  printStartupBanner();
 
   if (isConfigured()) {
-    (async () => {
-      try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath); }
-      catch (err) { console.error('  [startup] initial scan failed:', err.message); }
-    })();
-    setInterval(async () => {
-      try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath); }
-      catch (err) { console.error('  [pregen] scan failed:', err.message); }
-    }, 5 * 60 * 1000);
+    const cfg = loadConfig();
+    setRenderMode(cfg.renderMode || 'cpu');
+    // Warm the encoder probe so the detection line lands in the startup log.
+    getRenderCapabilities().catch(() => {});
+    if (PREGENERATE_THUMBS) {
+      (async () => {
+        try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath, PREGENERATE_THUMBS_LIMIT); }
+        catch (err) { term.logError('startup', `initial scan failed: ${err.message}`); }
+      })();
+      const pregenerateTimer = setInterval(async () => {
+        try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath, PREGENERATE_THUMBS_LIMIT); }
+        catch (err) { term.logError('pregen', `scan failed: ${err.message}`); }
+      }, 5 * 60 * 1000);
+      pregenerateTimer.unref();
+    }
   }
 });

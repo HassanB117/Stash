@@ -105,6 +105,11 @@ button {
   transition: all 0.15s;
   letter-spacing: 0.05em;
 }
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
 
 button.primary {
   background: rgba(0,212,255,0.15);
@@ -621,6 +626,24 @@ button.ghost:hover {
 .settings-msg { font-size: 10px; margin-top: 6px; min-height: 14px; letter-spacing: 0.05em; }
 .settings-msg.ok  { color: var(--green); }
 .settings-msg.bad { color: var(--red); }
+
+.render-mode-options { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.render-mode-option {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.render-mode-option:hover { border-color: var(--accent); }
+.render-mode-option input[type="radio"] { margin-top: 3px; accent-color: var(--accent); }
+.render-mode-option input[type="radio"]:disabled { opacity: 0.4; cursor: not-allowed; }
+.render-mode-option:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.render-mode-option:has(input:checked) { border-color: var(--accent); background: rgba(0, 212, 255, 0.05); }
+.render-mode-title { font-size: 12px; color: var(--text); letter-spacing: 0.05em; }
+.render-mode-desc { font-size: 9px; color: var(--text-dim); letter-spacing: 0.08em; margin-top: 2px; }
+.render-mode-hint { font-size: 9px; color: var(--text-dim); font-weight: normal; }
 
 /* ── Share page ── */
 .share-body { padding: 20px; }

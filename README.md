@@ -103,6 +103,7 @@ When running behind HTTPS in production, set `NODE_ENV=production` so session co
 | `FILE_META_CACHE_LIMIT` | `500` | Max entries in the in-memory file metadata LRU cache |
 | `PREGENERATE_THUMBS` | — | Set to `1` to pre-generate thumbnails on startup and every 5 minutes afterward |
 | `PREGENERATE_THUMBS_LIMIT` | `80` | Cap on thumbnails pre-generated per pass |
+| `NO_COLOR` | - | Disable colored terminal output |
 
 ## Optional dependencies
 

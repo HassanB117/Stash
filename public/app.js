@@ -15,6 +15,7 @@
   let platformFilter = 'All';
   let gameMeta = {};
   let capturesVersion = '';
+  let refreshInFlight = null;
 
   // Lazily fetch duration for video tile badges when they scroll into view
   var durObserver = typeof IntersectionObserver !== 'undefined' && new IntersectionObserver(function (entries) {
@@ -55,6 +56,9 @@
   const RECENT_PAGE_SIZE = 120;
 
   function $(id) { return document.getElementById(id); }
+  function withRefreshParam(url, force) {
+    return force ? url + (url.indexOf('?') === -1 ? '?' : '&') + 'refresh=1' : url;
+  }
 
   const grid            = $('grid');
   const filtersEl       = $('filters');
@@ -66,6 +70,7 @@
   const shareUrlEl      = $('shareUrl');
   const recentMoreBtn   = $('recentMoreBtn');
   const recentShownCount = $('recentShownCount');
+  const refreshBtn      = $('refreshBtn');
 
   // ── Tab switching ──────────────────────────────────────────────────────
   var tabRecent    = $('tabRecent');
@@ -141,36 +146,39 @@
     favorites = new Set(await res.json());
   }
 
-  async function loadCaptures() {
-    const res = await fetch('/api/captures');
+  async function loadCaptures(force) {
+    const res = await fetch(withRefreshParam('/api/captures', force));
     if (res.status === 401) { window.location.href = '/login'; return; }
     allCaptures = await res.json();
     gameMeta = {};
     Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
+    pruneFavoritesToLoadedCaptures();
     renderFilters();
     updateCounts();
     renderPlatformPills();
     renderGamesGrid(Object.keys(allCaptures).sort());
   }
 
-  async function fetchRecentPage(offset) {
+  async function fetchRecentPage(offset, force) {
     try {
-      const res = await fetch('/api/captures/recent?offset=' + offset + '&limit=' + RECENT_PAGE_SIZE);
+      const res = await fetch(withRefreshParam('/api/captures/recent?offset=' + offset + '&limit=' + RECENT_PAGE_SIZE, force));
       if (res.status === 401) { window.location.href = '/login'; return null; }
       if (!res.ok) return null;
       return await res.json();
     } catch { return null; }
   }
 
-  async function loadRecent(reset) {
+  async function loadRecent(reset, force) {
     if (recentLoading) return;
     recentLoading = true;
+    updateRefreshButton();
+    updateRecentMoreButton();
     try {
       // Fetch before mutating so a failed reset doesn't wipe state out from
       // under the DOM. On success we mutate `recentItems` in place so existing
       // tile click handlers (which close over the array) keep seeing it.
       const offset = reset ? 0 : recentItems.length;
-      const page = await fetchRecentPage(offset);
+      const page = await fetchRecentPage(offset, force);
       if (!page) return;
       if (reset) {
         recentItems.length = 0;
@@ -182,21 +190,23 @@
       updateCounts();
     } finally {
       recentLoading = false;
+      updateRecentMoreButton();
+      updateRefreshButton();
     }
   }
 
   function loadRecentNextPage() {
     if (recentItems.length >= recentTotal) return;
-    loadRecent(false);
+    loadRecent(false, false);
   }
 
   function versionKey(v) {
     return v.total + ':' + v.games + ':' + v.maxMtime;
   }
 
-  async function fetchCapturesVersion() {
+  async function fetchCapturesVersion(force) {
     try {
-      const res = await fetch('/api/captures/version');
+      const res = await fetch(withRefreshParam('/api/captures/version', force));
       if (!res.ok) return '';
       return versionKey(await res.json());
     } catch { return ''; }
@@ -218,6 +228,48 @@
       $('mBadgeGames').textContent   = games.length || '';
       $('mBadgeStarred').textContent = favorites.size || '';
     }
+  }
+
+  function pruneFavoritesToLoadedCaptures() {
+    if (favorites.size === 0) return;
+    var valid = new Set();
+    Object.keys(allCaptures).forEach(function (game) {
+      allCaptures[game].forEach(function (item) {
+        if (favorites.has(item.path)) valid.add(item.path);
+      });
+    });
+    favorites = valid;
+  }
+
+  function syncActivePanelsAfterReload() {
+    if (panelStarred.classList.contains('active')) renderStarredGrid();
+    if (!currentDrillGame) return;
+    if (!allCaptures[currentDrillGame] || allCaptures[currentDrillGame].length === 0) {
+      showLibrary();
+      return;
+    }
+    showDrilldown(currentDrillGame);
+  }
+
+  function updateRefreshButton() {
+    if (!refreshBtn) return;
+    var busy = !!refreshInFlight || recentLoading;
+    refreshBtn.disabled = busy;
+    refreshBtn.textContent = busy ? 'SYNCING...' : 'REFRESH';
+  }
+
+  async function refreshLibrary(force) {
+    if (refreshInFlight) return refreshInFlight;
+    refreshInFlight = (async function () {
+      updateRefreshButton();
+      await Promise.all([loadCaptures(force), loadRecent(true, force)]);
+      capturesVersion = await fetchCapturesVersion(force);
+      syncActivePanelsAfterReload();
+    })().finally(function () {
+      refreshInFlight = null;
+      updateRefreshButton();
+    });
+    return refreshInFlight;
   }
 
   function escapeHtml(s) {
@@ -451,7 +503,7 @@
         lbStar.classList.toggle('starred', data.starred);
       }
       updateCounts();
-      if (panelStarred.classList.contains('active')) renderStarredGrid();
+      syncActivePanelsAfterReload();
     } catch {}
   }
 
@@ -709,15 +761,49 @@
   shareModal.addEventListener('click', function (e) { if (e.target === shareModal) shareModal.classList.remove('open'); });
 
   // ── Settings ───────────────────────────────────────────────────────────
+  async function loadRenderCapabilities() {
+    var gpuLabel = $('gpuLabel');
+    var gpuDesc  = $('gpuDesc');
+    try {
+      var res = await fetch('/api/render-capabilities');
+      if (!res.ok) throw new Error('bad response');
+      var data = await res.json();
+      var gpuRadio = document.querySelector('input[name="settingsRenderMode"][value="gpu"]');
+      var cpuRadio = document.querySelector('input[name="settingsRenderMode"][value="cpu"]');
+      if (data.best) {
+        gpuLabel.textContent = '(' + data.best.label + ')';
+        gpuDesc.textContent  = 'detected: ' + data.best.name;
+        gpuRadio.disabled = false;
+      } else {
+        gpuLabel.textContent = '(unavailable)';
+        gpuDesc.textContent  = 'no hardware encoder detected';
+        gpuRadio.disabled = true;
+      }
+      var current = data.current === 'gpu' && !gpuRadio.disabled ? 'gpu' : 'cpu';
+      (current === 'gpu' ? gpuRadio : cpuRadio).checked = true;
+    } catch {
+      $('renderMsg').textContent = '✗ could not load render capabilities';
+      $('renderMsg').className = 'settings-msg bad';
+    }
+  }
+
   $('settingsBtn').addEventListener('click', function () {
     $('folderMsg').textContent = '';
     $('passMsg').textContent = '';
+    $('renderMsg').textContent = '';
     $('currentPass').value = '';
     $('newPass').value = '';
     settingsModal.classList.add('open');
+    loadRenderCapabilities();
   });
   $('settingsClose').addEventListener('click', function () { settingsModal.classList.remove('open'); });
   settingsModal.addEventListener('click', function (e) { if (e.target === settingsModal) settingsModal.classList.remove('open'); });
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', function () {
+      refreshLibrary(true);
+    });
+  }
 
   $('saveFolderBtn').addEventListener('click', async function () {
     var newPath = $('folderInput').value.trim();
@@ -733,9 +819,33 @@
       if (res.ok) {
         msg.textContent = '✓ PATH UPDATED';
         msg.className = 'settings-msg ok';
-        await loadConfig();
-        await Promise.all([loadCaptures(), loadRecent(true)]);
-        capturesVersion = await fetchCapturesVersion();
+        await Promise.all([loadConfig(), loadFavorites()]);
+        await refreshLibrary(true);
+      } else {
+        msg.textContent = '✗ ' + (data.error || 'failed');
+        msg.className = 'settings-msg bad';
+      }
+    } catch {
+      msg.textContent = '✗ NETWORK ERROR';
+      msg.className = 'settings-msg bad';
+    }
+  });
+
+  $('saveRenderBtn').addEventListener('click', async function () {
+    var picked = document.querySelector('input[name="settingsRenderMode"]:checked');
+    var mode = picked ? picked.value : 'cpu';
+    var msg = $('renderMsg');
+    msg.textContent = '';
+    try {
+      var res = await fetch('/api/config/render-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: mode }),
+      });
+      var data = await res.json();
+      if (res.ok) {
+        msg.textContent = '✓ RENDER MODE: ' + data.mode.toUpperCase();
+        msg.className = 'settings-msg ok';
       } else {
         msg.textContent = '✗ ' + (data.error || 'failed');
         msg.className = 'settings-msg bad';
@@ -789,8 +899,7 @@
   // ── Init ───────────────────────────────────────────────────────────────
   (async function () {
     await Promise.all([loadConfig(), loadFavorites()]);
-    await Promise.all([loadCaptures(), loadRecent(true)]);
-    capturesVersion = await fetchCapturesVersion();
+    await refreshLibrary(false);
 
     setInterval(async function () {
       try {
@@ -798,12 +907,7 @@
         if (!res.ok) return;
         var newVersion = versionKey(await res.json());
         if (newVersion === capturesVersion) return;
-        // Refetch full library for Games/Starred tabs, plus reset Recent to page 0.
-        // Only advance `capturesVersion` after success so a failed reload retries
-        // on the next tick instead of pinning us to a version we never loaded.
-        await Promise.all([loadCaptures(), loadRecent(true)]);
-        capturesVersion = newVersion;
-        if (panelStarred.classList.contains('active')) renderStarredGrid();
+        await refreshLibrary(false);
       } catch {}
     }, 30000);
   })();
