@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY server.js thumbs.js ./
+COPY server.js thumbs.js term.js ./
 COPY public ./public
 
 RUN mkdir -p /app/data && chown -R node:node /app
@@ -18,12 +18,13 @@ RUN mkdir -p /app/data && chown -R node:node /app
 USER node
 
 ENV NODE_ENV=production \
-    PORT=7117
+    PORT=7117 \
+    SESSION_COOKIE_SECURE=auto
 
 EXPOSE 7117
 VOLUME ["/app/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q -O /dev/null http://localhost:7117/api/csrf || exit 1
+  CMD wget -q -O /dev/null http://localhost:7117/healthz || exit 1
 
 CMD ["node", "server.js"]

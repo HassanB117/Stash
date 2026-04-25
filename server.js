@@ -28,6 +28,16 @@ function readBooleanEnv(name, fallback = false) {
   return fallback;
 }
 
+function readSessionCookieSecure() {
+  const raw = process.env.SESSION_COOKIE_SECURE;
+  if (raw === undefined || raw === '') return process.env.NODE_ENV === 'production';
+  const lower = String(raw).trim().toLowerCase();
+  if (lower === 'auto') return 'auto';
+  if (['1', 'true', 'on', 'yes'].includes(lower)) return true;
+  if (['0', 'false', 'off', 'no'].includes(lower)) return false;
+  return process.env.NODE_ENV === 'production';
+}
+
 function getTrustProxySetting() {
   const raw = process.env.TRUST_PROXY;
   if (raw === undefined || raw === '') return 1;
@@ -210,13 +220,17 @@ app.use((req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: '1h' }));
 
+app.get('/healthz', (_req, res) => {
+  res.type('text/plain').send('ok');
+});
+
 app.use(session({
   secret: getSessionSecret(),
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: readSessionCookieSecure(),
     sameSite: 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   },

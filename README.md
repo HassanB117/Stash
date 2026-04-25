@@ -36,7 +36,7 @@ CAPTURES_PATH=/path/to/your/captures docker compose up -d
 
 Open `http://localhost:7117` and enter `/captures` as the captures path in the setup wizard — that's where your host folder is mounted inside the container. App state (config, favorites, share tokens, generated thumbnails) lives in the `stash-data` named volume and survives container restarts.
 
-Override defaults with env vars: `STASH_PORT` (host port), `CAPTURES_PATH` (host captures folder), `TRUST_PROXY` (set to `false` if not behind a proxy).
+Override defaults with env vars: `STASH_PORT` (host port), `CAPTURES_PATH` (host captures folder), `TRUST_PROXY` (set to `false` if not behind a proxy), and `SESSION_COOKIE_SECURE` (`auto` in Docker so local HTTP works and HTTPS proxies still get secure cookies).
 
 ```bash
 docker rm -f stash
@@ -46,8 +46,7 @@ docker run -d `
   -p 7117:7117 `
   -v /path/to/your/captures:/captures `
   -v stash-data:/app/data `
-  -e CAPTURES_PATH=/captures `
-  -e STASH_PORT=7117 `
+  -e SESSION_COOKIE_SECURE=auto `
   -e TRUST_PROXY=true `
   ghcr.io/hassanb117/stash:latest
 ```
@@ -99,6 +98,7 @@ When running behind HTTPS in production, set `NODE_ENV=production` so session co
 | `PORT` | `7117` | HTTP port |
 | `NODE_ENV` | — | Set to `production` to mark session cookies secure |
 | `TRUST_PROXY` | `1` | Express trust-proxy setting; set to `false` if not behind a proxy |
+| `SESSION_COOKIE_SECURE` | `NODE_ENV === production` | Session cookie secure mode: `true`, `false`, or `auto` |
 | `CAPTURE_CACHE_TTL` | `5000` | Filesystem scan cache TTL in ms |
 | `FILE_META_CACHE_LIMIT` | `500` | Max entries in the in-memory file metadata LRU cache |
 | `PREGENERATE_THUMBS` | — | Set to `1` to pre-generate thumbnails on startup and every 5 minutes afterward |
