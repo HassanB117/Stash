@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>setup · stash</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -68,17 +68,17 @@
         <label>thumbnail & preview rendering</label>
         <div class="render-mode-options">
           <label class="render-mode-option">
-            <input type="radio" name="renderMode" value="cpu" checked>
+            <input type="radio" name="renderMode" value="software" checked>
             <div>
-              <div class="render-mode-title">CPU (software)</div>
+              <div class="render-mode-title">Software</div>
               <div class="render-mode-desc">works everywhere · slower on large video libraries</div>
             </div>
           </label>
           <label class="render-mode-option">
-            <input type="radio" name="renderMode" value="gpu">
+            <input type="radio" name="renderMode" value="hardware">
             <div>
-              <div class="render-mode-title">GPU (auto-detect)</div>
-              <div class="render-mode-desc">uses NVENC / QSV / AMF if available · falls back to CPU otherwise</div>
+              <div class="render-mode-title">Hardware (auto-detect)</div>
+              <div class="render-mode-desc">uses NVENC / QSV / AMF if available · falls back to software otherwise</div>
             </div>
           </label>
         </div>

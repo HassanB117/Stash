@@ -8,7 +8,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const term = require('./term');
-const { pregenerate, getImageMeta, setRenderMode, getRenderCapabilities, clearVideoPreviews, thumbAbsPath, previewAbsPath } = require('./thumbs');
+const { pregenerate, getImageMeta, setRenderMode, getRenderCapabilities, getHardwareDevice, clearVideoPreviews, thumbAbsPath, previewAbsPath } = require('./thumbs');
 
 const app = express();
 const PORT = process.env.PORT || 7117;
@@ -36,6 +36,25 @@ function readSessionCookieSecure() {
   if (['1', 'true', 'on', 'yes'].includes(lower)) return true;
   if (['0', 'false', 'off', 'no'].includes(lower)) return false;
   return process.env.NODE_ENV === 'production';
+}
+
+function normalizeRenderMode(mode) {
+  // Accept old config/API values from versions that used cpu/gpu names.
+  return (mode === 'hardware' || mode === 'gpu') ? 'hardware' : 'software';
+}
+
+function normalizeHardwareDevice(device) {
+  const value = typeof device === 'string' ? device.trim() : '';
+  return value || 'auto';
+}
+
+function publicHardwareTarget(target) {
+  const label = target.deviceLabel ? `${target.label} - ${target.deviceLabel}` : target.label;
+  return {
+    id: target.id,
+    name: target.name,
+    label,
+  };
 }
 
 function getTrustProxySetting() {
@@ -448,9 +467,10 @@ app.post('/api/setup/check-path', requireSetupNotDone, requireCsrf, (req, res) =
 });
 
 app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, res) => {
-  const { username, password, capturesPath, renderMode } = req.body;
+  const { username, password, capturesPath, renderMode, hardwareDevice } = req.body;
   if (!username || !password || !capturesPath) return res.status(400).json({ error: 'all fields required' });
-  const mode = renderMode === 'gpu' ? 'gpu' : 'cpu';
+  const mode = normalizeRenderMode(renderMode);
+  const device = normalizeHardwareDevice(hardwareDevice);
   if (typeof username !== 'string' || username.length < 2 || username.length > 32) {
     return res.status(400).json({ error: 'username must be 2-32 characters' });
   }
@@ -477,6 +497,7 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
     capturesPath: path.resolve(capturesPath),
     sessionSecret,
     renderMode: mode,
+    hardwareDevice: device,
     createdAt: Date.now(),
   };
   try {
@@ -490,7 +511,7 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
   captureCache.stamp = 0;
   captureCache.key = '';
   captureCache.value = {};
-  setRenderMode(mode);
+  setRenderMode(mode, device);
   res.json({ ok: true });
 });
 
@@ -595,7 +616,8 @@ app.get('/api/config', requireAuth, (req, res) => {
     username: cfg.username,
     capturesPath: cfg.capturesPath,
     siteUrl: cfg.siteUrl || '',
-    renderMode: cfg.renderMode || 'cpu',
+    renderMode: normalizeRenderMode(cfg.renderMode),
+    hardwareDevice: normalizeHardwareDevice(cfg.hardwareDevice),
   });
 });
 
@@ -604,9 +626,10 @@ app.get('/api/render-capabilities', requireAuth, async (req, res) => {
   try {
     const caps = await getRenderCapabilities();
     res.json({
-      available: caps.available.map((e) => ({ name: e.name, label: e.label })),
-      best: caps.best ? { name: caps.best.name, label: caps.best.label } : null,
-      current: cfg.renderMode || 'cpu',
+      available: caps.available.map(publicHardwareTarget),
+      best: caps.best ? publicHardwareTarget(caps.best) : null,
+      current: normalizeRenderMode(cfg.renderMode),
+      hardwareDevice: normalizeHardwareDevice(cfg.hardwareDevice || getHardwareDevice()),
     });
   } catch {
     res.status(500).json({ error: 'probe failed' });
@@ -614,15 +637,21 @@ app.get('/api/render-capabilities', requireAuth, async (req, res) => {
 });
 
 app.post('/api/config/render-mode', requireAuth, mutationLimiter, requireCsrf, async (req, res) => {
-  const { mode } = req.body;
-  if (mode !== 'cpu' && mode !== 'gpu') return res.status(400).json({ error: 'mode must be cpu or gpu' });
+  const requestedMode = req.body.mode;
+  if (!['software', 'hardware', 'cpu', 'gpu'].includes(requestedMode)) {
+    return res.status(400).json({ error: 'mode must be software or hardware' });
+  }
+  const mode = normalizeRenderMode(requestedMode);
+  const hardwareDevice = normalizeHardwareDevice(req.body.hardwareDevice);
   const cfg = loadConfig();
-  const changed = (cfg.renderMode || 'cpu') !== mode;
+  const changed = normalizeRenderMode(cfg.renderMode) !== mode ||
+    normalizeHardwareDevice(cfg.hardwareDevice) !== hardwareDevice;
   cfg.renderMode = mode;
+  cfg.hardwareDevice = hardwareDevice;
   saveConfig(cfg);
-  setRenderMode(mode);
-  term.logInfo('render', `mode set to ${mode}`);
-  res.json({ ok: true, mode, rerendering: changed });
+  setRenderMode(mode, hardwareDevice);
+  term.logInfo('render', `mode set to ${mode} (${hardwareDevice})`);
+  res.json({ ok: true, mode, hardwareDevice, rerendering: changed });
   if (changed) {
     try {
       const removed = await clearVideoPreviews();
@@ -775,6 +804,9 @@ app.get('/files/*', requireAuth, fileLimiter, (req, res) => {
   const fullPath = sanitizeRelPath(relPath);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
   res.set('Cache-Control', 'private, max-age=3600');
+  if (path.extname(fullPath).toLowerCase() === '.jxr') {
+    res.set('Content-Type', 'image/vnd.ms-photo');
+  }
   res.sendFile(fullPath);
 });
 
@@ -832,6 +864,9 @@ app.get('/s/:token/file', (req, res) => {
   let fullPath = row.abs_path && typeof row.abs_path === 'string' ? row.abs_path : null;
   if (!fullPath) fullPath = sanitizeRelPath(row.file_path);
   if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
+  if (path.extname(fullPath).toLowerCase() === '.jxr') {
+    res.set('Content-Type', 'image/vnd.ms-photo');
+  }
   res.sendFile(fullPath);
 });
 
@@ -851,7 +886,7 @@ app.listen(PORT, () => {
 
   if (isConfigured()) {
     const cfg = loadConfig();
-    setRenderMode(cfg.renderMode || 'cpu');
+    setRenderMode(normalizeRenderMode(cfg.renderMode), normalizeHardwareDevice(cfg.hardwareDevice));
     // Warm the encoder probe so the detection line lands in the startup log.
     getRenderCapabilities().catch(() => {});
     if (PREGENERATE_THUMBS) {

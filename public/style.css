@@ -78,7 +78,7 @@ input:focus, button:focus { outline: none; }
 }
 
 /* ── Inputs ── */
-input[type="text"], input[type="password"] {
+input[type="text"], input[type="password"], select {
   background: rgba(0,0,0,0.4);
   border: 1px solid rgba(255,255,255,0.08);
   color: var(--text);
@@ -89,10 +89,11 @@ input[type="text"], input[type="password"] {
   transition: border-color 0.15s, box-shadow 0.15s;
   letter-spacing: 0.02em;
 }
-input[type="text"]:focus, input[type="password"]:focus {
+input[type="text"]:focus, input[type="password"]:focus, select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 12px var(--accent-glow);
 }
+select:disabled { opacity: 0.5; cursor: not-allowed; }
 input::placeholder { color: var(--text-dim); }
 
 /* ── Buttons ── */
@@ -339,6 +340,7 @@ button.ghost:hover {
   display: flex; gap: 8px; align-items: center;
 }
 .topbar-actions button { padding: 6px 14px; font-size: 11px; }
+.topbar-actions .btn-icon { display: none; }
 
 /* Status dot */
 .status-dot {
@@ -938,7 +940,9 @@ button.ghost:hover {
   .topbar-logo { font-size: 18px; letter-spacing: 4px; padding-right: 12px; }
   .status-live { display: none; }
   .topbar-actions { gap: 6px; }
-  .topbar-actions button { padding: 5px 10px; font-size: 10px; }
+  .topbar-actions button { padding: 6px 9px; min-width: 34px; font-size: 10px; }
+  .topbar-actions .btn-label { display: none; }
+  .topbar-actions .btn-icon  { display: inline; font-size: 16px; line-height: 1; }
 
   /* Show mobile bottom nav */
   .mobile-tabs { display: flex; }

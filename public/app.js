@@ -255,7 +255,8 @@
     if (!refreshBtn) return;
     var busy = !!refreshInFlight || recentLoading;
     refreshBtn.disabled = busy;
-    refreshBtn.textContent = busy ? 'SYNCING...' : 'REFRESH';
+    var label = refreshBtn.querySelector('.btn-label');
+    if (label) label.textContent = busy ? 'SYNCING...' : 'REFRESH';
   }
 
   async function refreshLibrary(force) {
@@ -421,7 +422,7 @@
       '<button class="tile-star' + (starred ? ' starred' : '') + '" data-path="' + escapeHtml(item.path) + '">' + (starred ? '★' : '☆') + '</button>' +
       media +
       '<div class="tile-label">' +
-        '<span>' + escapeHtml(((gameMeta[item.game] && gameMeta[item.game].displayName) || item.game).toUpperCase().slice(0, 18)) + '</span>' +
+        '<span>' + escapeHtml(((gameMeta[item.game] && gameMeta[item.game].displayName) || parsePlatform(item.game).displayName).toUpperCase().slice(0, 18)) + '</span>' +
         '<span class="tile-date">' + date + '</span>' +
       '</div>' +
     '</div>';
@@ -762,25 +763,41 @@
 
   // ── Settings ───────────────────────────────────────────────────────────
   async function loadRenderCapabilities() {
-    var gpuLabel = $('gpuLabel');
-    var gpuDesc  = $('gpuDesc');
+    var hardwareLabel = $('hardwareLabel');
+    var hardwareDesc  = $('hardwareDesc');
+    var hardwareSelect = $('hardwareDeviceSelect');
     try {
       var res = await fetch('/api/render-capabilities');
       if (!res.ok) throw new Error('bad response');
       var data = await res.json();
-      var gpuRadio = document.querySelector('input[name="settingsRenderMode"][value="gpu"]');
-      var cpuRadio = document.querySelector('input[name="settingsRenderMode"][value="cpu"]');
+      var hardwareRadio = document.querySelector('input[name="settingsRenderMode"][value="hardware"]');
+      var softwareRadio = document.querySelector('input[name="settingsRenderMode"][value="software"]');
+      hardwareSelect.innerHTML = '';
+      var autoOption = document.createElement('option');
+      autoOption.value = 'auto';
+      autoOption.textContent = data.best ? 'Auto (' + data.best.label + ')' : 'Auto';
+      hardwareSelect.appendChild(autoOption);
+      (data.available || []).forEach(function (target) {
+        var option = document.createElement('option');
+        option.value = target.id;
+        option.textContent = target.label;
+        hardwareSelect.appendChild(option);
+      });
       if (data.best) {
-        gpuLabel.textContent = '(' + data.best.label + ')';
-        gpuDesc.textContent  = 'detected: ' + data.best.name;
-        gpuRadio.disabled = false;
+        hardwareLabel.textContent = '(' + data.best.label + ')';
+        hardwareDesc.textContent  = 'detected: ' + data.best.name;
+        hardwareRadio.disabled = false;
+        hardwareSelect.disabled = false;
       } else {
-        gpuLabel.textContent = '(unavailable)';
-        gpuDesc.textContent  = 'no hardware encoder detected';
-        gpuRadio.disabled = true;
+        hardwareLabel.textContent = '(unavailable)';
+        hardwareDesc.textContent  = 'no hardware encoder detected';
+        hardwareRadio.disabled = true;
+        hardwareSelect.disabled = true;
       }
-      var current = data.current === 'gpu' && !gpuRadio.disabled ? 'gpu' : 'cpu';
-      (current === 'gpu' ? gpuRadio : cpuRadio).checked = true;
+      hardwareSelect.value = data.hardwareDevice || 'auto';
+      if (hardwareSelect.value !== (data.hardwareDevice || 'auto')) hardwareSelect.value = 'auto';
+      var current = data.current === 'hardware' && !hardwareRadio.disabled ? 'hardware' : 'software';
+      (current === 'hardware' ? hardwareRadio : softwareRadio).checked = true;
     } catch {
       $('renderMsg').textContent = '✗ could not load render capabilities';
       $('renderMsg').className = 'settings-msg bad';
@@ -833,14 +850,15 @@
 
   $('saveRenderBtn').addEventListener('click', async function () {
     var picked = document.querySelector('input[name="settingsRenderMode"]:checked');
-    var mode = picked ? picked.value : 'cpu';
+    var mode = picked ? picked.value : 'software';
+    var hardwareDevice = $('hardwareDeviceSelect').value || 'auto';
     var msg = $('renderMsg');
     msg.textContent = '';
     try {
       var res = await fetch('/api/config/render-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: mode }),
+        body: JSON.stringify({ mode: mode, hardwareDevice: hardwareDevice }),
       });
       var data = await res.json();
       if (res.ok) {

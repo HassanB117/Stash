@@ -31,7 +31,7 @@ Open `http://localhost:7117` and complete the setup wizard:
 1. Create a username.
 2. Create a password.
 3. Choose your captures folder.
-4. Pick CPU or GPU video preview rendering.
+4. Pick software or hardware video preview rendering.
 
 ## Docker Compose
 
@@ -102,9 +102,9 @@ jpg jpeg png webp gif mp4 webm mov jxr avif heic heif
 - Full-screen lightbox for images and videos.
 - Video controls for play/pause, seek, mute, fullscreen, and keyboard navigation.
 - ffmpeg-generated thumbnails and video previews.
-- CPU/GPU rendering mode with hardware encoder detection where available.
+- Software/hardware rendering mode with hardware encoder detection where available.
 - Disposable public share links that expire after 24 hours.
-- Web settings for password, capture path, site URL, and render mode.
+- Web settings for password, capture path, site URL, render mode, and hardware device.
 
 ## Sharing Outside Your Network
 
@@ -137,6 +137,26 @@ Do not expose Stash directly to the public internet over plain HTTP.
 - Node.js 18 or newer.
 - ffmpeg and ffprobe available on `PATH` for thumbnails, previews, and video metadata.
 - Docker users do not need to install ffmpeg on the host; the image includes it.
+
+### Hardware Encoding in Docker
+
+Docker does not expose hardware encoders to containers by default. Use the
+matching override when you want hardware preview rendering:
+
+```bash
+# NVIDIA
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
+
+# AMD / Intel on Linux through VAAPI
+docker compose -f docker-compose.yml -f docker-compose.vaapi.yml up -d --build
+```
+
+For VAAPI, the container uses `/dev/dri/renderD128` unless `VAAPI_DEVICE` is set.
+Set `VIDEO_GID` and `RENDER_GID` if your host uses different group IDs for
+`/dev/dri`.
+If the app still reports software-only, check the startup log for the encoder
+probe result; hardware mode intentionally falls back to software when ffmpeg cannot open a
+hardware encoder.
 
 JPEG XR (`.jxr`) thumbnail generation uses Windows WIC support when running directly on Windows. In Linux containers, `.jxr` files can still be listed and served, but thumbnail generation depends on decoder support available to ffmpeg.
 

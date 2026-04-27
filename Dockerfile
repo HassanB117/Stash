@@ -3,7 +3,14 @@ FROM node:20-alpine
 
 LABEL org.opencontainers.image.source=https://github.com/HassanB117/Stash
 
-RUN apk add --no-cache ffmpeg wget
+RUN apk add --no-cache \
+    ffmpeg \
+    libva-utils \
+    mesa-va-gallium \
+    wget && \
+    if [ "$(apk --print-arch)" = "x86_64" ]; then \
+      apk add --no-cache intel-media-driver; \
+    fi
 
 WORKDIR /app
 

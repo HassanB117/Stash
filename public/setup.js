@@ -56,7 +56,7 @@
     var err = document.getElementById('error-3');
     err.textContent = '';
     var picked = document.querySelector('input[name="renderMode"]:checked');
-    var mode = picked ? picked.value : 'cpu';
+    var mode = picked ? picked.value : 'software';
     try {
       var res = await fetch('/api/setup/complete', {
         method: 'POST',
@@ -66,6 +66,7 @@
           password: account.password,
           capturesPath: folder,
           renderMode: mode,
+          hardwareDevice: 'auto',
         }),
       });
       var data = await res.json();

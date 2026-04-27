@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>stash</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -39,9 +39,9 @@
         <div class="status-dot"></div>
         LIVE
       </div>
-      <button type="button" class="ghost" id="refreshBtn">REFRESH</button>
-      <button type="button" class="ghost" id="settingsBtn">SETTINGS</button>
-      <button type="button" class="ghost" id="logoutBtn">LOGOUT</button>
+      <button type="button" class="ghost" id="refreshBtn" aria-label="Refresh"><span class="btn-icon" aria-hidden="true">↻</span><span class="btn-label">REFRESH</span></button>
+      <button type="button" class="ghost" id="settingsBtn" aria-label="Settings"><span class="btn-icon" aria-hidden="true">⚙</span><span class="btn-label">SETTINGS</span></button>
+      <button type="button" class="ghost" id="logoutBtn" aria-label="Log out"><span class="btn-icon" aria-hidden="true">⏻</span><span class="btn-label">LOGOUT</span></button>
     </div>
   </header>
 
@@ -154,20 +154,24 @@
         <label>// RENDER MODE</label>
         <div class="render-mode-options" id="renderModeOptions">
           <label class="render-mode-option">
-            <input type="radio" name="settingsRenderMode" value="cpu">
+            <input type="radio" name="settingsRenderMode" value="software">
             <div>
-              <div class="render-mode-title">CPU (software)</div>
+              <div class="render-mode-title">Software</div>
               <div class="render-mode-desc">works everywhere</div>
             </div>
           </label>
           <label class="render-mode-option">
-            <input type="radio" name="settingsRenderMode" value="gpu">
+            <input type="radio" name="settingsRenderMode" value="hardware">
             <div>
-              <div class="render-mode-title">GPU <span id="gpuLabel" class="render-mode-hint">auto-detect</span></div>
-              <div class="render-mode-desc" id="gpuDesc">uses NVENC / QSV / AMF if available</div>
+              <div class="render-mode-title">Hardware <span id="hardwareLabel" class="render-mode-hint">auto-detect</span></div>
+              <div class="render-mode-desc" id="hardwareDesc">uses NVENC / QSV / AMF if available</div>
             </div>
           </label>
         </div>
+        <label for="hardwareDeviceSelect">// HARDWARE DEVICE</label>
+        <select id="hardwareDeviceSelect">
+          <option value="auto">Auto</option>
+        </select>
         <div class="modal-actions">
           <button type="button" id="saveRenderBtn">APPLY</button>
         </div>
@@ -177,6 +181,7 @@
       <div class="modal-actions" style="margin-top:20px;">
         <button type="button" class="ghost" id="settingsClose">CLOSE</button>
       </div>
+      <div style="margin-top:16px;text-align:center;font-size:9px;color:var(--text-dim);letter-spacing:3px;">STASH v1.3.2</div>
     </div>
   </div>
 

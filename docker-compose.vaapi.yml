@@ -1,0 +1,9 @@
+services:
+  stash:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-109}"
+    environment:
+      VAAPI_DEVICE: ${VAAPI_DEVICE:-/dev/dri/renderD128}
