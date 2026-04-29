@@ -4,14 +4,29 @@ const { execFile, spawn } = require('child_process');
 const term = require('./term');
 
 const THUMB_DIR = path.join(__dirname, 'data', 'thumbs');
+const TMP_DIR = path.join(THUMB_DIR, '_tmp');
 const THUMB_SIZE = 480;
 const PREV_W = THUMB_SIZE;
-const PREGENERATE_CONCURRENCY = 3;
+const PREGENERATE_CONCURRENCY = readBoundedIntEnv('PREGENERATE_CONCURRENCY', 3, 1, 8);
+const RENDER_FAILURE_BACKOFF_MS = readPositiveIntEnv('RENDER_FAILURE_BACKOFF_MS', 30 * 60 * 1000);
 const pending = new Map();
+const renderFailures = new Map();
+let pregenerateActive = false;
+let pregenerateQueued = null;
 
 // One-time ffmpeg / ffprobe availability checks. Result is cached.
 let ffmpegOk = null;
 let ffprobeOk = null;
+
+function readPositiveIntEnv(name, fallback) {
+  const raw = process.env[name];
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function readBoundedIntEnv(name, fallback, min, max) {
+  return Math.max(min, Math.min(max, readPositiveIntEnv(name, fallback)));
+}
 
 function checkBinary(bin, flagged) {
   return new Promise((resolve) => {
@@ -197,9 +212,9 @@ async function probeEncoders() {
     const result = await testEncoder(enc);
     if (result.ok) {
       available.push(enc);
-      term.logInfo('render', `${getEncoderLabel(enc)} (${enc.name}) - available`);
+      term.logInfo('render', `${term.badge('HW', 'success')} ${getEncoderLabel(enc)} (${enc.name}) available`);
     } else {
-      term.logInfo('render', `${getEncoderLabel(enc)} (${enc.name}) - not available: ${result.reason}`);
+      term.logInfo('render', `${term.badge('SKIP', 'muted')} ${getEncoderLabel(enc)} (${enc.name}) ${result.reason}`);
       if (enc.id && enc.id.startsWith('h264_amf:d3d11:') && result.reason === 'adapter not found') {
         while (candidates[i + 1] && candidates[i + 1].id && candidates[i + 1].id.startsWith('h264_amf:d3d11:')) i++;
       }
@@ -208,8 +223,8 @@ async function probeEncoders() {
 
   const best = available[0] || null;
   encoderProbe = { available, best };
-  if (best) term.logSuccess('render', `hardware encoder selected: ${getEncoderLabel(best)} (${best.name})`);
-  else term.logInfo('render', 'no hardware encoder available - software only');
+  if (best) term.logSuccess('render', `${term.badge('HW', 'success')} selected ${getEncoderLabel(best)} (${best.name})`);
+  else term.logInfo('render', `${term.badge('SW', 'muted')} no hardware encoder available - software only`);
   return encoderProbe;
 }
 
@@ -218,6 +233,7 @@ function setRenderMode(mode, device) {
   if (device !== undefined) hardwareDevice = normalizeHardwareDevice(device);
   hardwareFallbackWarned = false;
   hardwareDeviceFallbackWarned = false;
+  renderFailures.clear();
 }
 
 function getRenderMode() { return renderMode; }
@@ -273,9 +289,11 @@ async function pickVideoEncodeArgs() {
 // ── Path helpers ───────────────────────────────────────────────────────
 
 function getSafeRelPath(relPath) {
-  return path.normalize(relPath)
-    .replace(/^(\.\.[\/\\])+/, '')
-    .replace(/^[\\\/]+/, '');
+  const normalized = path.normalize(String(relPath || '')).replace(/\\/g, '/');
+  return normalized
+    .split('/')
+    .filter((part) => part && part !== '.' && part !== '..' && !/^[a-zA-Z]:$/.test(part))
+    .join('/');
 }
 
 function thumbAbsPath(relPath) {
@@ -288,6 +306,56 @@ function previewAbsPath(relPath) {
   const safeRel = getSafeRelPath(relPath);
   const parsed = path.parse(safeRel.replace(/\\/g, '/'));
   return path.join(THUMB_DIR, parsed.dir, `${parsed.name}_preview_${PREV_W}.mp4`);
+}
+
+function tempRenderPath(dest) {
+  const parsed = path.parse(dest);
+  const ext = parsed.ext || '.tmp';
+  const name = `${parsed.name}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  return path.join(TMP_DIR, name);
+}
+
+async function validateRenderedFile(filePath) {
+  const stat = await fs.promises.stat(filePath);
+  if (!stat.isFile() || stat.size <= 0) throw new Error('render produced an empty file');
+  return stat;
+}
+
+async function publishRenderedFile(tmpPath, dest) {
+  await validateRenderedFile(tmpPath);
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+  await fs.promises.rename(tmpPath, dest);
+  await validateRenderedFile(dest);
+}
+
+async function renderToTempFile(dest, renderFn) {
+  await fs.promises.mkdir(TMP_DIR, { recursive: true });
+  const tmpPath = tempRenderPath(dest);
+  try {
+    await renderFn(tmpPath);
+    await publishRenderedFile(tmpPath, dest);
+  } finally {
+    fs.promises.unlink(tmpPath).catch(() => {});
+  }
+}
+
+async function cleanupStaleTempFiles(maxAgeMs = 60 * 60 * 1000) {
+  let entries;
+  try { entries = await fs.promises.readdir(TMP_DIR, { withFileTypes: true }); }
+  catch { return 0; }
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isFile()) return;
+    const full = path.join(TMP_DIR, entry.name);
+    try {
+      const stat = await fs.promises.stat(full);
+      if (stat.mtimeMs > cutoff) return;
+      await fs.promises.unlink(full);
+      removed++;
+    } catch {}
+  }));
+  return removed;
 }
 
 // ── ffmpeg helpers ─────────────────────────────────────────────────────
@@ -361,10 +429,9 @@ async function makeImageThumb(src, dest) {
     if (process.platform !== 'win32') {
       throw new Error('.jxr decoding requires Windows (WIC JPEG XR codec)');
     }
-    const tmpDir = path.join(THUMB_DIR, '_tmp');
-    await fs.promises.mkdir(tmpDir, { recursive: true });
+    await fs.promises.mkdir(TMP_DIR, { recursive: true });
     tmpToCleanup = path.join(
-      tmpDir,
+      TMP_DIR,
       `jxr-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
     await convertJxrToPng(src, tmpToCleanup);
     effectiveSrc = tmpToCleanup;
@@ -416,25 +483,25 @@ function runVideoPreviewFfmpeg(relPath, src, dest, encoderOptions, progressTag, 
   return new Promise((resolve, reject) => {
     const encodeArgs = encoderOptions.args;
     const encoderName = encoderOptions.encoder;
-    const label = relPath.length > 40 ? '...' + relPath.slice(-37) : relPath.padEnd(40);
+    const label = term.shortPath(relPath, 44).padEnd(44);
     const barWidth = 20;
     const durationUs = 2_000_000;
     const canAnimateProgress = animateProgress && term.isInteractive();
     const encoderTag = encoderName === 'libx264' ? 'SW' : 'HW';
-    const countTag = progressTag ? term.muted('[' + progressTag + ']') : '';
+    const encoderTone = encoderTag === 'SW' ? 'muted' : 'accent';
+    const countTag = progressTag ? term.badge(progressTag, 'muted') : '';
 
     function buildProgressLine(pct, extra, tone) {
-      const filled = Math.round(pct / 100 * barWidth);
-      const bar = '#'.repeat(filled) + '-'.repeat(barWidth - filled);
-      const parts = ['  ' + term.formatLabel('render', 'accent')];
+      const done = tone === 'success';
+      const parts = ['  ' + term.formatLabel('render', done ? 'success' : 'accent')];
       if (countTag) parts.push(countTag);
       parts.push(
-        term.muted('[' + encoderTag + ']'),
+        term.badge(encoderTag, done ? 'success' : encoderTone),
         term.muted(label),
-        tone === 'success' ? term.success('[' + bar + ']') : term.accent('[' + bar + ']'),
+        term.progressBar(pct, barWidth, done ? 'success' : 'accent'),
         term.muted(String(pct).padStart(3) + '%'),
       );
-      if (extra) parts.push(term.muted(extra));
+      if (extra) parts.push(term.muted(extra || ''));
       return parts.join(' ');
     }
 
@@ -445,7 +512,7 @@ function runVideoPreviewFfmpeg(relPath, src, dest, encoderOptions, progressTag, 
 
     const countPrefix = progressTag ? `[${progressTag}] ` : '';
     if (canAnimateProgress) drawBar(0);
-    else term.logInfo('render', `${countPrefix}${relPath} [${encoderTag}:${encoderName}]`);
+    else term.logInfo('render', `${countPrefix}${term.badge(encoderTag, encoderTone)} ${term.shortPath(relPath)} ${term.muted(encoderName)}`);
 
     const args = [
       '-hide_banner',
@@ -491,7 +558,7 @@ function runVideoPreviewFfmpeg(relPath, src, dest, encoderOptions, progressTag, 
         if (canAnimateProgress) {
           term.write('\r' + buildProgressLine(100, '- ' + sizeStr, 'success') + '\n', 'stdout');
         } else {
-          term.logSuccess('render', `${countPrefix}${relPath} [${encoderTag}:${encoderName}] (${sizeStr})`);
+          term.logSuccess('render', `${countPrefix}${term.badge(encoderTag, 'success')} ${term.shortPath(relPath)} ${term.muted(sizeStr)}`);
         }
         resolve();
       } else {
@@ -541,8 +608,9 @@ async function ensureThumb(relPath, fullSrcPath, isVideo, progressTag) {
   if (!await checkFfmpeg()) throw new Error('ffmpeg not available');
 
   const prefix = progressTag ? `[${progressTag}] ` : '';
-  term.logInfo(isVideo ? 'vthumb' : 'thumb', `${prefix}${relPath}`);
-  const work = (isVideo ? makeVideoThumb(fullSrcPath, dest) : makeImageThumb(fullSrcPath, dest))
+  term.logInfo('render', `${prefix}${term.badge(isVideo ? 'VTHUMB' : 'THUMB', 'muted')} ${term.shortPath(relPath)}`);
+  const work = renderToTempFile(dest, (tmpDest) =>
+    isVideo ? makeVideoThumb(fullSrcPath, tmpDest) : makeImageThumb(fullSrcPath, tmpDest))
     .finally(() => pending.delete(relPath));
   pending.set(relPath, work);
   await work;
@@ -562,63 +630,159 @@ async function ensurePreview(relPath, fullSrcPath, progressTag, animateProgress 
 
   if (!await checkFfmpeg()) throw new Error('ffmpeg not available');
 
-  const work = makeVideoPreview(relPath, fullSrcPath, dest, progressTag, animateProgress)
+  const work = renderToTempFile(dest, (tmpDest) =>
+    makeVideoPreview(relPath, fullSrcPath, tmpDest, progressTag, animateProgress))
     .finally(() => pending.delete(key));
   pending.set(key, work);
   await work;
   return dest;
 }
 
-function pregenerate(capturesMap, sanitizeFn, limit = Infinity) {
-  if (limit <= 0) return;
-  setImmediate(async () => {
-    const todo = [];
-    for (const [, files] of Object.entries(capturesMap)) {
-      if (todo.length >= limit) break;
-      for (const file of files) {
-        if (todo.length >= limit) break;
-        const needThumb = !fs.existsSync(thumbAbsPath(file.path));
-        const needPreview = file.type === 'video' && !fs.existsSync(previewAbsPath(file.path));
-        if (needThumb || needPreview) todo.push({ file, needThumb, needPreview });
+function failureKey(file) {
+  return file && file.path ? file.path : '';
+}
+
+function getBackoffFailure(file, now = Date.now()) {
+  const key = failureKey(file);
+  const record = key ? renderFailures.get(key) : null;
+  if (!record) return null;
+  if (record.mtime !== file.mtime) {
+    renderFailures.delete(key);
+    return null;
+  }
+  if ((now - record.failedAt) >= RENDER_FAILURE_BACKOFF_MS) {
+    renderFailures.delete(key);
+    return null;
+  }
+  return record;
+}
+
+function rememberRenderFailure(file, err) {
+  const key = failureKey(file);
+  if (!key) return;
+  renderFailures.set(key, {
+    mtime: file.mtime,
+    failedAt: Date.now(),
+    message: err && err.message ? err.message : 'render failed',
+  });
+}
+
+function forgetRenderFailure(file) {
+  const key = failureKey(file);
+  if (key) renderFailures.delete(key);
+}
+
+async function buildPregenerateTodo(capturesMap, limit) {
+  const todo = [];
+  const now = Date.now();
+  for (const [, files] of Object.entries(capturesMap || {})) {
+    for (const file of files) {
+      const needThumb = !fs.existsSync(thumbAbsPath(file.path));
+      const needPreview = file.type === 'video' && !fs.existsSync(previewAbsPath(file.path));
+      if (!needThumb && !needPreview) {
+        forgetRenderFailure(file);
+        continue;
       }
-      // Yield to the event loop between game directories
+      const backoff = getBackoffFailure(file, now);
+      todo.push({ file, needThumb, needPreview, backoff });
+    }
+    // Yield to the event loop between game directories.
+    await new Promise((r) => setImmediate(r));
+  }
+  todo.sort((a, b) => (b.file.mtime || 0) - (a.file.mtime || 0));
+  return Number.isFinite(limit) ? todo.slice(0, limit) : todo;
+}
+
+async function runPregeneratePass(capturesMap, sanitizeFn, limit) {
+  const removedTemps = await cleanupStaleTempFiles();
+  if (removedTemps) term.logInfo('render', `${term.badge('CLEAN', 'muted')} removed ${removedTemps} stale temp file(s)`);
+
+  const todo = await buildPregenerateTodo(capturesMap, limit);
+  if (todo.length === 0) return;
+
+  const total = todo.length;
+  term.writeLine(term.divider('render'));
+  term.logInfo('render', `queued ${total} newest-first file(s), concurrency ${PREGENERATE_CONCURRENCY}`);
+
+  let done = 0;
+  let failed = 0;
+  let skipped = 0;
+  let nextIndex = 0;
+
+  async function runOne(item, index) {
+    const { file, needThumb, needPreview, backoff } = item;
+    const tag = `${index + 1}/${total}`;
+    if (backoff) {
+      skipped++;
+      term.logWarn('render', `[${tag}] backoff ${term.shortPath(file.path)}: ${backoff.message}`);
+      return;
+    }
+
+    const src = sanitizeFn(file.path);
+    if (!src) {
+      skipped++;
+      term.logWarn('render', `[${tag}] skipped ${term.shortPath(file.path)}`);
+      return;
+    }
+
+    try {
+      if (needThumb) await ensureThumb(file.path, src, file.type === 'video', tag);
+      if (needPreview) await ensurePreview(file.path, src, tag, false);
+      forgetRenderFailure(file);
+      done++;
+    } catch (err) {
+      failed++;
+      rememberRenderFailure(file, err);
+      term.logError('render', `[${tag}] failed ${term.shortPath(file.path)}: ${err.message}`);
+    }
+  }
+
+  async function worker() {
+    while (nextIndex < todo.length) {
+      const index = nextIndex++;
+      await runOne(todo[index], index);
+      // Yield between files so request handling stays responsive.
       await new Promise((r) => setImmediate(r));
     }
+  }
 
-    if (todo.length === 0) return;
-    const total = todo.length;
-    term.logInfo('render', `${total} file(s) to process (${PREGENERATE_CONCURRENCY} at a time)`);
+  const workerCount = Math.min(PREGENERATE_CONCURRENCY, todo.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-    let done = 0;
-    let nextIndex = 0;
+  const suffix = [
+    `${done}/${total} processed`,
+    failed ? `${failed} failed` : '',
+    skipped ? `${skipped} skipped` : '',
+  ].filter(Boolean).join(', ');
+  term.logSuccess('render', `complete - ${suffix}`);
+}
 
-    async function runOne(item, index) {
-      const { file, needThumb, needPreview } = item;
-      const tag = `${index + 1}/${total}`;
-      const src = sanitizeFn(file.path);
-      if (!src) return;
-      try {
-        if (needThumb) await ensureThumb(file.path, src, file.type === 'video', tag);
-        if (needPreview) await ensurePreview(file.path, src, tag, false);
-        done++;
-      } catch (err) {
-        term.logError('render', `[${tag}] failed ${file.path}: ${err.message}`);
+function pregenerate(capturesMap, sanitizeFn, limit = Infinity) {
+  if (limit <= 0) return;
+  const request = { capturesMap, sanitizeFn, limit };
+  if (pregenerateActive) {
+    pregenerateQueued = request;
+    term.logInfo('render', `${term.badge('QUEUE', 'muted')} render pass already active; scheduled one follow-up pass`);
+    return;
+  }
+
+  pregenerateActive = true;
+  setImmediate(async () => {
+    let current = request;
+    try {
+      while (current) {
+        pregenerateQueued = null;
+        await runPregeneratePass(current.capturesMap, current.sanitizeFn, current.limit);
+        current = pregenerateQueued;
+      }
+    } finally {
+      pregenerateActive = false;
+      if (pregenerateQueued) {
+        const queued = pregenerateQueued;
+        pregenerateQueued = null;
+        pregenerate(queued.capturesMap, queued.sanitizeFn, queued.limit);
       }
     }
-
-    async function worker() {
-      while (nextIndex < todo.length) {
-        const index = nextIndex++;
-        await runOne(todo[index], index);
-        // Yield between files so request handling stays responsive.
-        await new Promise((r) => setImmediate(r));
-      }
-    }
-
-    const workerCount = Math.min(PREGENERATE_CONCURRENCY, todo.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-    term.logSuccess('render', `complete - ${done}/${total} processed`);
   });
 }
 

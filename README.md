@@ -26,7 +26,9 @@ npm install
 npm start
 ```
 
-Open `http://localhost:7117` and complete the setup wizard:
+Open `http://localhost:7117` and complete the setup wizard. On first run,
+Stash prints a one-time setup token in the server log; enter it in the wizard
+before choosing your captures folder.
 
 1. Create a username.
 2. Create a password.
@@ -48,6 +50,7 @@ App state is stored in the `stash-data` Docker volume:
 - `shares.json`
 - generated thumbnails and previews
 - session secret
+- server-side sessions
 
 ### Docker Environment Variables
 
@@ -55,8 +58,9 @@ App state is stored in the `stash-data` Docker volume:
 |---|---:|---|
 | `STASH_PORT` | `7117` | Host port published by Docker Compose |
 | `CAPTURES_PATH` | `./captures` | Host folder mounted into the container as `/captures` |
-| `TRUST_PROXY` | `1` | Express trust-proxy setting |
+| `TRUST_PROXY` | `false` | Express trust-proxy setting; set to `1` only behind a trusted reverse proxy |
 | `SESSION_COOKIE_SECURE` | `auto` | Cookie secure mode for Docker: `true`, `false`, or `auto` |
+| `REQUIRE_SETUP_TOKEN` | `true` | Require the first-run setup token |
 
 ### Docker Run
 
@@ -67,9 +71,10 @@ docker run -d \
   -v /path/to/your/captures:/captures:ro \
   -v stash-data:/app/data \
   -e SESSION_COOKIE_SECURE=auto \
-  -e TRUST_PROXY=true \
   ghcr.io/hassanb117/stash:latest
 ```
+
+Read the setup token with `docker logs stash` before completing setup.
 
 ## Capture Folder Layout
 
@@ -115,8 +120,17 @@ cloudflared tunnel --url http://localhost:7117
 ```
 
 Set your public tunnel URL in Stash settings so generated share links use the external URL.
+Public site URLs must use HTTPS, except for localhost.
 
-Do not expose Stash directly to the public internet over plain HTTP.
+For a reverse proxy that terminates HTTPS, set:
+
+```bash
+TRUST_PROXY=1
+SESSION_COOKIE_SECURE=auto
+```
+
+Only set `TRUST_PROXY` when the Node process is reachable solely through that
+trusted proxy. Do not expose Stash directly to the public internet over plain HTTP.
 
 ## App Environment Variables
 
@@ -124,12 +138,20 @@ Do not expose Stash directly to the public internet over plain HTTP.
 |---|---:|---|
 | `PORT` | `7117` | HTTP port used by the Node server |
 | `NODE_ENV` | empty | Set to `production` for production runtime behavior |
-| `TRUST_PROXY` | `1` | Express trust-proxy setting; use `false` if not behind a proxy |
+| `TRUST_PROXY` | `false` | Express trust-proxy setting; set to `1` only behind a trusted reverse proxy |
 | `SESSION_COOKIE_SECURE` | `NODE_ENV === production` | Session cookie secure mode: `true`, `false`, or `auto` |
+| `REQUIRE_SETUP_TOKEN` | `true` | Require the first-run setup token before setup APIs work |
+| `SETUP_TOKEN` | generated | Optional explicit first-run setup token |
+| `MIN_PASSWORD_LENGTH` | `12` | Minimum length for new passwords |
+| `MAX_PASSWORD_LENGTH` | `1024` | Maximum accepted password length |
+| `SESSION_MAX_AGE` | `604800000` | Session lifetime in milliseconds |
+| `ALLOW_INSECURE_SITE_URL` | `false` | Allow non-local `http://` public share URLs |
 | `CAPTURE_CACHE_TTL` | `5000` | Filesystem scan cache TTL in milliseconds |
 | `FILE_META_CACHE_LIMIT` | `500` | Max entries in the in-memory metadata cache |
 | `PREGENERATE_THUMBS` | `true` | Enable background thumbnail and preview generation |
 | `PREGENERATE_THUMBS_LIMIT` | unlimited | Max files processed per pregeneration pass |
+| `PREGENERATE_CONCURRENCY` | `3` | Concurrent thumbnail/preview render workers, clamped from `1` to `8` |
+| `RENDER_FAILURE_BACKOFF_MS` | `1800000` | Time to skip retrying the same failing media file and mtime |
 | `NO_COLOR` | empty | Disable colored terminal output |
 
 ## Requirements
@@ -163,10 +185,14 @@ JPEG XR (`.jxr`) thumbnail generation uses Windows WIC support when running dire
 ## Security Model
 
 - Passwords are hashed with bcrypt.
+- Sessions are stored server-side under `data/sessions` with private file permissions.
 - Login attempts are rate-limited.
 - Mutating requests require CSRF tokens.
+- First-run setup requires a setup token by default.
 - File access is restricted to the configured captures folder.
+- File-serving routes only serve supported media extensions and reject symlinks that resolve outside the captures folder.
 - Share tokens are random, scoped to one file, and expire after 24 hours.
+- Public share files are served with no-store caching and rate limiting.
 - Helmet sets security headers and a restrictive CSP.
 - There is no upload endpoint.
 
@@ -189,6 +215,15 @@ docker compose config
 ```
 
 There is currently no automated test suite.
+
+### Terminal Output
+
+Startup logs show the local URL, setup state, setup token when needed, render
+mode, sharing status, and public-web security hints. Render logs use compact
+paths and SW/HW badges so Docker logs stay readable while interactive terminals
+get polished progress bars. Pregeneration prioritizes newest captures first and
+backs off temporarily from files that fail to render. Set `NO_COLOR=1` to
+disable ANSI colors.
 
 ## Reset Setup
 

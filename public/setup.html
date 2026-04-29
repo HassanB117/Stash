@@ -35,11 +35,16 @@
       </div>
       <div class="field">
         <label for="password">password</label>
-        <input type="password" id="password" autocomplete="new-password" placeholder="at least 8 characters">
+        <input type="password" id="password" autocomplete="new-password" placeholder="at least 12 characters">
       </div>
       <div class="field">
         <label for="passwordConfirm">confirm password</label>
         <input type="password" id="passwordConfirm" autocomplete="new-password">
+      </div>
+      <div class="field">
+        <label for="setupToken">setup token</label>
+        <input type="password" id="setupToken" autocomplete="off" placeholder="from the server log">
+        <div class="hint">required unless REQUIRE_SETUP_TOKEN=false.</div>
       </div>
       <div class="error" id="error-1"></div>
       <button type="button" class="primary" id="next-1">NEXT →</button>

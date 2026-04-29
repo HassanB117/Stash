@@ -11,7 +11,9 @@ const term = require('./term');
 const { pregenerate, getImageMeta, setRenderMode, getRenderCapabilities, getHardwareDevice, clearVideoPreviews, thumbAbsPath, previewAbsPath } = require('./thumbs');
 
 const app = express();
+app.disable('x-powered-by');
 const PORT = process.env.PORT || 7117;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 function readPositiveIntEnv(name, fallback) {
   const raw = process.env[name];
@@ -48,6 +50,33 @@ function normalizeHardwareDevice(device) {
   return value || 'auto';
 }
 
+function isLocalHostname(hostname) {
+  const lower = String(hostname || '').toLowerCase();
+  return lower === 'localhost' || lower === '::1' || lower.endsWith('.localhost') ||
+    /^127(?:\.\d{1,3}){3}$/.test(lower);
+}
+
+function normalizeSiteUrl(siteUrl) {
+  const trimmed = typeof siteUrl === 'string' ? siteUrl.trim() : '';
+  if (!trimmed) return { ok: true, value: '' };
+  let parsed;
+  try { parsed = new URL(trimmed); } catch { return { ok: false, error: 'invalid URL' }; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, error: 'URL must use http or https' };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, error: 'URL must not include credentials' };
+  }
+  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    return { ok: false, error: 'URL must be an origin only, like https://stash.example.com' };
+  }
+  if (parsed.protocol !== 'https:' && !isLocalHostname(parsed.hostname) &&
+      !readBooleanEnv('ALLOW_INSECURE_SITE_URL', false)) {
+    return { ok: false, error: 'public site URL must use https' };
+  }
+  return { ok: true, value: parsed.origin };
+}
+
 function publicHardwareTarget(target) {
   const label = target.deviceLabel ? `${target.label} - ${target.deviceLabel}` : target.label;
   return {
@@ -59,21 +88,35 @@ function publicHardwareTarget(target) {
 
 function getTrustProxySetting() {
   const raw = process.env.TRUST_PROXY;
-  if (raw === undefined || raw === '') return 1;
+  if (raw === undefined || raw === '') return false;
   const lower = String(raw).trim().toLowerCase();
   if (['false', '0', 'off', 'no'].includes(lower)) return false;
   if (['true', 'on', 'yes'].includes(lower)) return true;
+  if (['loopback', 'linklocal', 'uniquelocal'].includes(lower)) return lower;
+  if (String(raw).includes(',')) {
+    const values = String(raw).split(',').map(v => v.trim()).filter(Boolean);
+    if (values.length > 0) return values;
+  }
   const num = Number(raw);
-  return Number.isFinite(num) ? num : 1;
+  return Number.isFinite(num) ? num : false;
 }
-app.set('trust proxy', getTrustProxySetting());
+const TRUST_PROXY_SETTING = getTrustProxySetting();
+app.set('trust proxy', TRUST_PROXY_SETTING);
 const DATA_DIR = path.join(__dirname, 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SHARES_FILE = path.join(DATA_DIR, 'shares.json');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
 const SESSION_SECRET_FILE = path.join(DATA_DIR, 'session.secret');
+const SESSION_DIR = path.join(DATA_DIR, 'sessions');
+const SETUP_TOKEN_FILE = path.join(DATA_DIR, 'setup.token');
 const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mov', '.jxr', '.avif', '.heic', '.heif']);
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov']);
+const SHARE_TOKEN_RE = /^[a-f0-9]{64}$/i;
+const MAX_REL_PATH_LENGTH = readPositiveIntEnv('MAX_REL_PATH_LENGTH', 4096);
+const MIN_PASSWORD_LENGTH = readPositiveIntEnv('MIN_PASSWORD_LENGTH', 12);
+const MAX_PASSWORD_LENGTH = readPositiveIntEnv('MAX_PASSWORD_LENGTH', 1024);
+const SESSION_MAX_AGE = readPositiveIntEnv('SESSION_MAX_AGE', 7 * 24 * 60 * 60 * 1000);
+const REQUIRE_SETUP_TOKEN = readBooleanEnv('REQUIRE_SETUP_TOKEN', true);
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -96,6 +139,117 @@ function pruneFileMetaCache() {
   }
 }
 
+function writePrivateFileSync(filePath, contents, options = {}) {
+  fs.writeFileSync(filePath, contents, Object.assign({ mode: 0o600 }, options));
+  try { fs.chmodSync(filePath, 0o600); } catch {}
+}
+
+function writeJsonFileSync(filePath, value, pretty = false) {
+  const suffix = `${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`;
+  const tmpPath = `${filePath}.${suffix}.tmp`;
+  const json = JSON.stringify(value, null, pretty ? 2 : 0);
+  writePrivateFileSync(tmpPath, json);
+  fs.renameSync(tmpPath, filePath);
+  try { fs.chmodSync(filePath, 0o600); } catch {}
+}
+
+function safeCompareSecret(supplied, expected) {
+  if (typeof supplied !== 'string' || typeof expected !== 'string') return false;
+  const suppliedBuf = Buffer.from(supplied);
+  const expectedBuf = Buffer.from(expected);
+  return suppliedBuf.length === expectedBuf.length &&
+    crypto.timingSafeEqual(suppliedBuf, expectedBuf);
+}
+
+function validatePassword(password, label = 'password') {
+  if (typeof password !== 'string') return `${label} is required`;
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `${label} must be at least ${MIN_PASSWORD_LENGTH} characters`;
+  }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return `${label} must be at most ${MAX_PASSWORD_LENGTH} characters`;
+  }
+  return null;
+}
+
+class FileSessionStore extends session.Store {
+  constructor(options) {
+    super();
+    this.dir = options.dir;
+    this.ttlMs = options.ttlMs;
+    fs.mkdirSync(this.dir, { recursive: true });
+    this.pruneTimer = setInterval(() => this.pruneExpired(), 60 * 60 * 1000);
+    this.pruneTimer.unref();
+  }
+
+  sessionFile(sid) {
+    const digest = crypto.createHash('sha256').update(String(sid)).digest('hex');
+    return path.join(this.dir, `${digest}.json`);
+  }
+
+  getExpires(sess) {
+    const cookieExpires = sess && sess.cookie && sess.cookie.expires;
+    const expires = cookieExpires ? new Date(cookieExpires).getTime() : NaN;
+    return Number.isFinite(expires) ? expires : Date.now() + this.ttlMs;
+  }
+
+  get(sid, cb) {
+    fs.readFile(this.sessionFile(sid), 'utf8', (err, raw) => {
+      if (err && err.code === 'ENOENT') return cb(null, null);
+      if (err) return cb(err);
+      try {
+        const row = JSON.parse(raw);
+        if (!row || !row.sess || !Number.isFinite(row.expires) || row.expires < Date.now()) {
+          return this.destroy(sid, () => cb(null, null));
+        }
+        return cb(null, row.sess);
+      } catch {
+        return this.destroy(sid, () => cb(null, null));
+      }
+    });
+  }
+
+  set(sid, sess, cb) {
+    try {
+      writePrivateFileSync(this.sessionFile(sid), JSON.stringify({
+        expires: this.getExpires(sess),
+        sess,
+      }));
+      cb && cb(null);
+    } catch (err) {
+      cb && cb(err);
+    }
+  }
+
+  destroy(sid, cb) {
+    fs.unlink(this.sessionFile(sid), (err) => {
+      if (err && err.code !== 'ENOENT') return cb && cb(err);
+      return cb && cb(null);
+    });
+  }
+
+  touch(sid, sess, cb) {
+    this.set(sid, sess, cb);
+  }
+
+  pruneExpired() {
+    fs.readdir(this.dir, (err, files) => {
+      if (err) return;
+      files.filter(file => file.endsWith('.json')).forEach((file) => {
+        const filePath = path.join(this.dir, file);
+        fs.readFile(filePath, 'utf8', (readErr, raw) => {
+          if (readErr) return;
+          try {
+            const row = JSON.parse(raw);
+            if (row && Number.isFinite(row.expires) && row.expires >= Date.now()) return;
+          } catch {}
+          fs.unlink(filePath, () => {});
+        });
+      });
+    });
+  }
+}
+
 // --- Config ---
 let configCache = null;
 let configCacheMtime = 0;
@@ -114,12 +268,12 @@ function loadConfig() {
   }
 }
 function saveConfig(cfg) {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  writeJsonFileSync(CONFIG_FILE, cfg, true);
   configCache = cfg;
   try { configCacheMtime = fs.statSync(CONFIG_FILE).mtimeMs; } catch {}
 }
 function safeDecodeURI(s) {
-  try { return decodeURIComponent(s); } catch { return null; }
+  return typeof s === 'string' ? s : null;
 }
 function isConfigured() {
   const cfg = loadConfig();
@@ -134,11 +288,37 @@ function getSessionSecret() {
       return fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
     }
     const secret = crypto.randomBytes(64).toString('hex');
-    fs.writeFileSync(SESSION_SECRET_FILE, secret, { mode: 0o600 });
+    writePrivateFileSync(SESSION_SECRET_FILE, secret);
     return secret;
   } catch {
     return crypto.randomBytes(64).toString('hex');
   }
+}
+
+function getSetupToken() {
+  if (!REQUIRE_SETUP_TOKEN || isConfigured()) return null;
+  const envToken = typeof process.env.SETUP_TOKEN === 'string' ? process.env.SETUP_TOKEN.trim() : '';
+  if (envToken) return envToken;
+  try {
+    if (fs.existsSync(SETUP_TOKEN_FILE)) {
+      const existing = fs.readFileSync(SETUP_TOKEN_FILE, 'utf8').trim();
+      if (existing) return existing;
+    }
+    const token = crypto.randomBytes(24).toString('hex');
+    writePrivateFileSync(SETUP_TOKEN_FILE, token + '\n', { flag: 'wx' });
+    return token;
+  } catch {
+    try {
+      const existing = fs.readFileSync(SETUP_TOKEN_FILE, 'utf8').trim();
+      if (existing) return existing;
+    } catch {}
+    return null;
+  }
+}
+
+function clearGeneratedSetupToken() {
+  if (process.env.SETUP_TOKEN) return;
+  try { fs.unlinkSync(SETUP_TOKEN_FILE); } catch {}
 }
 
 function ensureSessionCsrfToken(req) {
@@ -150,7 +330,7 @@ function ensureSessionCsrfToken(req) {
 }
 
 function requireCsrf(req, res, next) {
-  const supplied = req.get('x-csrf-token') || req.body?.csrfToken || req.query?.csrfToken;
+  const supplied = req.get('x-csrf-token') || req.body?.csrfToken;
   const expected = ensureSessionCsrfToken(req);
   if (!supplied || !expected || supplied !== expected) {
     return res.status(403).json({ error: 'bad csrf token' });
@@ -176,24 +356,37 @@ function loadFavorites() {
   }
   catch { return []; }
 }
-function saveFavorites(arr) { fs.writeFileSync(FAVORITES_FILE, JSON.stringify(arr)); }
+function saveFavorites(arr) { writeJsonFileSync(FAVORITES_FILE, arr); }
 
 // --- Shares ---
 function loadShares() {
-  try { return JSON.parse(fs.readFileSync(SHARES_FILE, 'utf8')); }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SHARES_FILE, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+  }
   catch { return {}; }
 }
-function saveShares(s) { fs.writeFileSync(SHARES_FILE, JSON.stringify(s)); }
+function saveShares(s) { writeJsonFileSync(SHARES_FILE, s); }
+function isShareToken(token) {
+  return typeof token === 'string' && SHARE_TOKEN_RE.test(token);
+}
 function getShare(token) {
+  if (!isShareToken(token)) return null;
   const row = loadShares()[token];
-  if (!row || row.expires_at < Date.now()) return null;
+  if (!row || typeof row !== 'object') return null;
+  if (typeof row.file_path !== 'string' || !Number.isFinite(row.expires_at)) return null;
+  if (row.expires_at < Date.now()) return null;
   return row;
 }
-function addShare(token, filePath, absPath, expiresAt) {
+function addShare(token, filePath, absPath, expiresAt, cfg) {
   const shares = loadShares();
+  let rootRealPath = '';
+  try { rootRealPath = fs.realpathSync.native(path.resolve(cfg.capturesPath)); } catch {}
   shares[token] = {
     file_path: filePath,
     abs_path: absPath,
+    root_real_path: rootRealPath,
     expires_at: expiresAt,
     created_at: Date.now(),
   };
@@ -206,7 +399,12 @@ const sharesCleanupTimer = setInterval(() => {
   if (keys.length === 0) return;
   let changed = false;
   for (const t of keys) {
-    if (shares[t].expires_at < Date.now()) { delete shares[t]; changed = true; }
+    const row = shares[t];
+    if (!isShareToken(t) || !row || typeof row !== 'object' ||
+        !Number.isFinite(row.expires_at) || row.expires_at < Date.now()) {
+      delete shares[t];
+      changed = true;
+    }
   }
   if (changed) saveShares(shares);
 }, 60 * 60 * 1000);
@@ -218,19 +416,35 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
+      baseUri: ["'none'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      formAction: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      scriptSrc: ["'self'", "https://static.cloudflareinsights.com"],
+      scriptSrc: ["'self'"],
       imgSrc: ["'self'", "data:"],
       mediaSrc: ["'self'"],
-      connectSrc: ["'self'", "https://cloudflareinsights.com"],
+      connectSrc: ["'self'"],
     },
   },
+  referrerPolicy: { policy: 'same-origin' },
+  strictTransportSecurity: IS_PRODUCTION
+    ? { maxAge: 15552000, includeSubDomains: true }
+    : false,
   crossOriginEmbedderPolicy: false,
 }));
+app.use((_req, res, next) => {
+  res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  next();
+});
 
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: false, limit: '10kb' }));
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 // HTML files are only served via explicit routes (which apply auth/redirects);
 // block direct fetches like /index.html that would bypass the redirect logic.
 app.use((req, res, next) => {
@@ -244,6 +458,8 @@ app.get('/healthz', (_req, res) => {
 });
 
 app.use(session({
+  name: 'stash.sid',
+  store: new FileSessionStore({ dir: SESSION_DIR, ttlMs: SESSION_MAX_AGE }),
   secret: getSessionSecret(),
   resave: false,
   saveUninitialized: false,
@@ -251,7 +467,7 @@ app.use(session({
     httpOnly: true,
     secure: readSessionCookieSecure(),
     sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: SESSION_MAX_AGE,
   },
 }));
 
@@ -259,6 +475,22 @@ const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
   message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
+const csrfLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 300,
+  message: { error: 'Too many requests. Try again later.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
+const setupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  message: { error: 'Too many setup attempts. Try again later.' },
   standardHeaders: 'draft-7',
   legacyHeaders: false,
 });
@@ -305,27 +537,108 @@ const fileLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const publicShareLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 1000,
+  message: { error: 'Too many share requests. Try again later.' },
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+});
+
 // --- Helpers ---
+function isPathInside(parent, child) {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!!relative && !isTraversalPath(relative) && !path.isAbsolute(relative));
+}
+
+function isTraversalPath(normalizedPath) {
+  return normalizedPath === '..' ||
+    normalizedPath.startsWith(`..${path.sep}`) ||
+    normalizedPath.startsWith('../') ||
+    normalizedPath.startsWith('..\\');
+}
+
 function sanitizeRelPath(relPath, cfg) {
-  if (typeof relPath !== 'string') return null;
+  if (typeof relPath !== 'string' || relPath.length === 0 || relPath.length > MAX_REL_PATH_LENGTH) return null;
+  if (relPath.includes('\0') || path.isAbsolute(relPath)) return null;
   cfg = cfg || loadConfig();
   if (!cfg || !cfg.capturesPath) return null;
   const capturesDir = path.resolve(cfg.capturesPath);
-  const normalized = path.normalize(relPath).replace(/^(\.\.[\/\\])+/, '');
+  const normalized = path.normalize(relPath);
+  if (normalized === '.' || isTraversalPath(normalized) || path.isAbsolute(normalized)) return null;
   const fullPath = path.resolve(capturesDir, normalized);
-  if (!fullPath.startsWith(capturesDir + path.sep) && fullPath !== capturesDir) return null;
+  if (!isPathInside(capturesDir, fullPath)) return null;
   return fullPath;
 }
 
+function resolveCaptureFile(relPath, cfg) {
+  cfg = cfg || loadConfig();
+  const fullPath = sanitizeRelPath(relPath, cfg);
+  if (!fullPath || !ALLOWED_EXT.has(path.extname(fullPath).toLowerCase())) return null;
+  try {
+    const stat = fs.statSync(fullPath);
+    if (!stat.isFile()) return null;
+    const capturesReal = fs.realpathSync.native(path.resolve(cfg.capturesPath));
+    const fileReal = fs.realpathSync.native(fullPath);
+    if (!isPathInside(capturesReal, fileReal)) return null;
+    return fileReal;
+  } catch {
+    return null;
+  }
+}
+
+function canonicalCaptureRelPath(fullPath, cfg) {
+  cfg = cfg || loadConfig();
+  const capturesReal = fs.realpathSync.native(path.resolve(cfg.capturesPath));
+  const fileReal = fs.realpathSync.native(fullPath);
+  if (!isPathInside(capturesReal, fileReal)) return null;
+  return path.relative(capturesReal, fileReal).split(path.sep).join('/');
+}
+
+function resolveSharedFile(row) {
+  let fullPath = null;
+  if (row.abs_path && typeof row.abs_path === 'string') {
+    fullPath = path.resolve(row.abs_path);
+    if (!ALLOWED_EXT.has(path.extname(fullPath).toLowerCase())) return null;
+    try {
+      const stat = fs.statSync(fullPath);
+      if (!stat.isFile()) return null;
+      const fileReal = fs.realpathSync.native(fullPath);
+      if (row.root_real_path && typeof row.root_real_path === 'string') {
+        const rootReal = fs.realpathSync.native(row.root_real_path);
+        if (!isPathInside(rootReal, fileReal)) return null;
+      }
+      return fileReal;
+    } catch {
+      return null;
+    }
+  }
+  return resolveCaptureFile(row.file_path);
+}
+
 function requireAuth(req, res, next) {
-  if (!isConfigured()) return res.redirect('/setup');
+  if (!isConfigured()) {
+    if (req.path.startsWith('/api/')) return res.status(503).json({ error: 'setup required' });
+    return res.redirect('/setup');
+  }
   if (req.session.authed) return next();
+  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'unauthorized' });
   if (req.accepts('html')) return res.redirect('/login');
   return res.status(401).json({ error: 'unauthorized' });
 }
 
 function requireSetupNotDone(req, res, next) {
   if (isConfigured()) return res.status(403).json({ error: 'already configured' });
+  next();
+}
+
+function requireSetupToken(req, res, next) {
+  if (!REQUIRE_SETUP_TOKEN) return next();
+  const expected = getSetupToken();
+  const supplied = req.get('x-setup-token') || req.body?.setupToken || '';
+  if (!expected || !safeCompareSecret(supplied, expected)) {
+    return res.status(403).json({ error: 'setup token required' });
+  }
   next();
 }
 
@@ -338,22 +651,66 @@ function shouldForceRefresh(req) {
   return isTruthyFlag(req.query.refresh) || isTruthyFlag(req.query.force);
 }
 
+function describeTrustProxy(value) {
+  if (Array.isArray(value)) return value.join(', ');
+  if (value === true) return 'enabled';
+  if (value === false) return 'disabled';
+  return String(value);
+}
+
+function describeCookieSecure(value) {
+  if (value === true) return 'secure';
+  if (value === 'auto') return 'auto';
+  return 'off';
+}
+
 function printStartupBanner() {
   const configured = isConfigured();
   const url = `http://localhost:${PORT}`;
+  const cfg = configured ? loadConfig() : null;
+  const rows = [
+    { key: 'url', value: url, tone: 'accent' },
+    {
+      key: 'state',
+      value: configured
+        ? term.badge('ONLINE', 'success')
+        : term.badge('SETUP REQUIRED', 'warn'),
+    },
+  ];
 
-  term.writeLine('');
-  term.writeLine('  ' + term.accent('STASH'));
-  term.writeLine('  ' + term.muted('-----'));
-  term.writeLine('  ' + term.muted('URL    ') + term.accent(url));
-  term.writeLine(
-    '  ' + term.muted(configured ? 'STATUS ' : 'SETUP  ') +
-    (configured ? term.success('archive online') : term.warn('first run - open the URL to set up'))
+  if (cfg) {
+    const mode = normalizeRenderMode(cfg.renderMode);
+    const device = normalizeHardwareDevice(cfg.hardwareDevice);
+    rows.push(
+      { key: 'render', value: mode === 'hardware' ? `hardware (${device})` : 'software' },
+      { key: 'sharing', value: cfg.siteUrl ? cfg.siteUrl : 'public URL not set', tone: cfg.siteUrl ? 'accent' : 'warn' },
+    );
+  } else {
+    rows.push({ key: 'next', value: 'open the URL and complete setup' });
+  }
+
+  if (!configured && REQUIRE_SETUP_TOKEN) {
+    const setupToken = getSetupToken();
+    if (setupToken) {
+      rows.push(
+        { key: 'token', value: setupToken, tone: 'accent' },
+        { key: 'hint', value: 'enter this setup token in the first-run wizard' },
+      );
+    }
+  }
+
+  rows.push(
+    { type: 'divider', label: 'security' },
+    { key: 'setup', value: REQUIRE_SETUP_TOKEN ? 'token required' : 'token disabled', tone: REQUIRE_SETUP_TOKEN ? 'success' : 'warn' },
+    { key: 'cookies', value: describeCookieSecure(readSessionCookieSecure()) },
+    { key: 'proxy', value: describeTrustProxy(TRUST_PROXY_SETTING) },
+    { key: 'public', value: 'use HTTPS before exposing outside your LAN' },
   );
-  term.writeLine('');
+
+  term.banner('STASH', rows, { subtitle: 'capture archive server' });
 }
 
-app.get('/api/csrf', (req, res) => {
+app.get('/api/csrf', csrfLimiter, (req, res) => {
   res.json({ csrfToken: ensureSessionCsrfToken(req) });
 });
 
@@ -380,7 +737,7 @@ async function scanCapturesFromDir(capturesDir) {
         const statted = await Promise.all(candidates.map(async f => {
           try {
             const ext = path.extname(f).toLowerCase();
-            const stat = await fs.promises.stat(path.join(gameDir, f));
+            const stat = await fs.promises.lstat(path.join(gameDir, f));
             if (!stat.isFile()) return null;
             return {
               name: f,
@@ -442,15 +799,17 @@ function getCapturesSnapshot(force = false) {
 app.get('/', (req, res) => {
   if (!isConfigured()) return res.redirect('/setup');
   if (!req.session.authed) return res.redirect('/login');
+  res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.get('/setup', (req, res) => {
   if (isConfigured()) return res.redirect('/login');
+  res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'setup.html'));
 });
 
-app.post('/api/setup/check-path', requireSetupNotDone, requireCsrf, (req, res) => {
+app.post('/api/setup/check-path', setupLimiter, requireSetupNotDone, requireSetupToken, requireCsrf, (req, res) => {
   const { path: folderPath } = req.body;
   if (!folderPath || typeof folderPath !== 'string') {
     return res.status(400).json({ ok: false, error: 'no path provided' });
@@ -466,7 +825,7 @@ app.post('/api/setup/check-path', requireSetupNotDone, requireCsrf, (req, res) =
   }
 });
 
-app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, res) => {
+app.post('/api/setup/complete', setupLimiter, requireSetupNotDone, requireSetupToken, requireCsrf, async (req, res) => {
   const { username, password, capturesPath, renderMode, hardwareDevice } = req.body;
   if (!username || !password || !capturesPath) return res.status(400).json({ error: 'all fields required' });
   const mode = normalizeRenderMode(renderMode);
@@ -474,9 +833,8 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
   if (typeof username !== 'string' || username.length < 2 || username.length > 32) {
     return res.status(400).json({ error: 'username must be 2-32 characters' });
   }
-  if (typeof password !== 'string' || password.length < 8) {
-    return res.status(400).json({ error: 'password must be at least 8 characters' });
-  }
+  const passwordError = validatePassword(password);
+  if (passwordError) return res.status(400).json({ error: passwordError });
   try {
     const resolved = path.resolve(capturesPath);
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
@@ -501,11 +859,12 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
     createdAt: Date.now(),
   };
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { flag: 'wx' });
+    writePrivateFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { flag: 'wx' });
   } catch (e) {
     if (e && e.code === 'EEXIST') return res.status(409).json({ error: 'already configured' });
     return res.status(500).json({ error: 'failed to save config' });
   }
+  clearGeneratedSetupToken();
   configCache = cfg;
   try { configCacheMtime = fs.statSync(CONFIG_FILE).mtimeMs; } catch {}
   captureCache.stamp = 0;
@@ -518,6 +877,7 @@ app.post('/api/setup/complete', requireSetupNotDone, requireCsrf, async (req, re
 app.get('/login', (req, res) => {
   if (!isConfigured()) return res.redirect('/setup');
   if (req.session.authed) return res.redirect('/');
+  res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
@@ -528,15 +888,24 @@ app.post('/login', loginLimiter, requireCsrf, async (req, res) => {
   if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     return res.status(400).json({ error: 'missing fields' });
   }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: 'password is too long' });
+  }
   if (!cfg.passwordHash || typeof cfg.passwordHash !== 'string') {
     return res.status(500).json({ error: 'config corrupted' });
   }
   const userOk = username === cfg.username;
   const passOk = await bcrypt.compare(password, cfg.passwordHash);
   if (!userOk || !passOk) return res.status(401).json({ error: 'wrong username or password' });
-  req.session.authed = true;
-  ensureSessionCsrfToken(req);
-  res.json({ ok: true });
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'login failed' });
+    req.session.authed = true;
+    ensureSessionCsrfToken(req);
+    req.session.save((saveErr) => {
+      if (saveErr) return res.status(500).json({ error: 'login failed' });
+      res.json({ ok: true });
+    });
+  });
 });
 
 app.post('/logout', requireCsrf, (req, res) => {
@@ -650,12 +1019,12 @@ app.post('/api/config/render-mode', requireAuth, mutationLimiter, requireCsrf, a
   cfg.hardwareDevice = hardwareDevice;
   saveConfig(cfg);
   setRenderMode(mode, hardwareDevice);
-  term.logInfo('render', `mode set to ${mode} (${hardwareDevice})`);
+  term.logInfo('render', `${term.badge('MODE', 'accent')} ${mode} (${hardwareDevice})`);
   res.json({ ok: true, mode, hardwareDevice, rerendering: changed });
   if (changed) {
     try {
       const removed = await clearVideoPreviews();
-      term.logInfo('render', `cleared ${removed} cached preview(s) - regenerating with ${mode}`);
+      term.logInfo('render', `${term.badge('RESET', 'warn')} cleared ${removed} cached preview(s); regenerating with ${mode}`);
       pregenerate(await getCapturesSnapshot(true), sanitizeRelPath);
     } catch (err) {
       term.logError('render', `regenerate after mode switch failed: ${err.message}`);
@@ -684,33 +1053,26 @@ app.post('/api/config/path', requireAuth, mutationLimiter, requireCsrf, (req, re
 });
 
 app.post('/api/config/url', requireAuth, mutationLimiter, requireCsrf, (req, res) => {
-  let { siteUrl } = req.body;
-  if (siteUrl && typeof siteUrl === 'string' && siteUrl.trim()) {
-    siteUrl = siteUrl.trim().replace(/\/$/, '');
-    let parsed;
-    try { parsed = new URL(siteUrl); } catch { return res.status(400).json({ error: 'invalid URL' }); }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return res.status(400).json({ error: 'URL must use http or https' });
-    }
-  } else {
-    siteUrl = '';
-  }
+  const normalized = normalizeSiteUrl(req.body.siteUrl);
+  if (!normalized.ok) return res.status(400).json({ error: normalized.error });
   const cfg = loadConfig();
-  cfg.siteUrl = siteUrl;
+  cfg.siteUrl = normalized.value;
   saveConfig(cfg);
-  res.json({ ok: true, siteUrl });
+  res.json({ ok: true, siteUrl: normalized.value });
 });
 
 app.post('/api/config/password', requireAuth, mutationLimiter, requireCsrf, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const cfg = loadConfig();
   const current = typeof currentPassword === 'string' ? currentPassword : '';
+  if (current.length > MAX_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: 'current password is too long' });
+  }
   if (!await bcrypt.compare(current, cfg.passwordHash)) {
     return res.status(401).json({ error: 'current password wrong' });
   }
-  if (typeof newPassword !== 'string' || newPassword.length < 8) {
-    return res.status(400).json({ error: 'new password must be 8+ characters' });
-  }
+  const passwordError = validatePassword(newPassword, 'new password');
+  if (passwordError) return res.status(400).json({ error: passwordError });
   cfg.passwordHash = await bcrypt.hash(newPassword, 12);
   saveConfig(cfg);
   res.json({ ok: true });
@@ -721,10 +1083,11 @@ app.get('/api/favorites', requireAuth, (req, res) => res.json(loadFavorites()));
 app.post('/api/favorites/toggle', requireAuth, mutationLimiter, requireCsrf, (req, res) => {
   const { filePath } = req.body;
   if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'bad request' });
-  const fullPath = sanitizeRelPath(filePath);
+  const fullPath = resolveCaptureFile(filePath);
   if (!fullPath) return res.status(400).json({ error: 'invalid path' });
   const cfg = loadConfig();
-  const canonical = path.relative(path.resolve(cfg.capturesPath), fullPath).split(path.sep).join('/');
+  const canonical = canonicalCaptureRelPath(fullPath, cfg);
+  if (!canonical) return res.status(400).json({ error: 'invalid path' });
   const favs = loadFavorites();
   const idx = favs.indexOf(canonical);
   const starred = idx === -1;
@@ -737,8 +1100,8 @@ app.post('/api/favorites/toggle', requireAuth, mutationLimiter, requireCsrf, (re
 app.get('/api/file-meta', requireAuth, fileMetaLimiter, async (req, res) => {
   const relPath = req.query.path;
   if (typeof relPath !== 'string' || !relPath) return res.status(400).json({ error: 'no path' });
-  const fullPath = sanitizeRelPath(relPath);
-  if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).json({ error: 'not found' });
+  const fullPath = resolveCaptureFile(relPath);
+  if (!fullPath) return res.status(404).json({ error: 'not found' });
 
   try {
     const stat = fs.statSync(fullPath);
@@ -801,8 +1164,8 @@ function getVideoDuration(filePath) {
 app.get('/files/*', requireAuth, fileLimiter, (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
-  const fullPath = sanitizeRelPath(relPath);
-  if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
+  const fullPath = resolveCaptureFile(relPath);
+  if (!fullPath) return res.status(404).send('not found');
   res.set('Cache-Control', 'private, max-age=3600');
   if (path.extname(fullPath).toLowerCase() === '.jxr') {
     res.set('Content-Type', 'image/vnd.ms-photo');
@@ -817,9 +1180,12 @@ app.get('/files/*', requireAuth, fileLimiter, (req, res) => {
 app.get('/thumb/*', requireAuth, thumbLimiter, (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
-  const fullSrcPath = sanitizeRelPath(relPath);
-  if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
-  const dest = thumbAbsPath(relPath);
+  const cfg = loadConfig();
+  const fullSrcPath = resolveCaptureFile(relPath, cfg);
+  if (!fullSrcPath) return res.status(404).send('not found');
+  const canonical = canonicalCaptureRelPath(fullSrcPath, cfg);
+  if (!canonical) return res.status(404).send('not found');
+  const dest = thumbAbsPath(canonical);
   if (!fs.existsSync(dest)) return res.status(404).send('thumbnail not ready');
   res.set('Cache-Control', 'private, max-age=86400');
   res.sendFile(dest);
@@ -828,9 +1194,12 @@ app.get('/thumb/*', requireAuth, thumbLimiter, (req, res) => {
 app.get('/preview/*', requireAuth, thumbLimiter, (req, res) => {
   const relPath = safeDecodeURI(req.params[0]);
   if (relPath == null) return res.status(400).send('bad path');
-  const fullSrcPath = sanitizeRelPath(relPath);
-  if (!fullSrcPath || !fs.existsSync(fullSrcPath)) return res.status(404).send('not found');
-  const dest = previewAbsPath(relPath);
+  const cfg = loadConfig();
+  const fullSrcPath = resolveCaptureFile(relPath, cfg);
+  if (!fullSrcPath) return res.status(404).send('not found');
+  const canonical = canonicalCaptureRelPath(fullSrcPath, cfg);
+  if (!canonical) return res.status(404).send('not found');
+  const dest = previewAbsPath(canonical);
   if (!fs.existsSync(dest)) return res.status(404).send('preview not ready');
   res.set('Cache-Control', 'private, max-age=86400');
   res.sendFile(dest);
@@ -839,46 +1208,56 @@ app.get('/preview/*', requireAuth, thumbLimiter, (req, res) => {
 app.post('/api/share', requireAuth, shareLimiter, requireCsrf, (req, res) => {
   const { filePath } = req.body;
   if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'bad request' });
-  const fullPath = sanitizeRelPath(filePath);
-  if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).json({ error: 'file not found' });
+  const fullPath = resolveCaptureFile(filePath);
+  if (!fullPath) return res.status(404).json({ error: 'file not found' });
   const cfg = loadConfig();
-  const canonical = path.relative(path.resolve(cfg.capturesPath), fullPath).split(path.sep).join('/');
+  const canonical = canonicalCaptureRelPath(fullPath, cfg);
+  if (!canonical) return res.status(400).json({ error: 'invalid path' });
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-  addShare(token, canonical, fullPath, expiresAt);
+  addShare(token, canonical, fullPath, expiresAt, cfg);
   const relUrl = `/s/${token}`;
   res.json({ token, url: cfg.siteUrl ? `${cfg.siteUrl}${relUrl}` : relUrl, expiresAt });
 });
 
-app.get('/s/:token', (req, res) => {
+app.get('/s/:token', publicShareLimiter, (req, res) => {
   const row = getShare(req.params.token);
+  res.set('Cache-Control', 'no-store');
   if (!row) return res.status(404).sendFile(path.join(__dirname, 'public', 'expired.html'));
   res.sendFile(path.join(__dirname, 'public', 'share.html'));
 });
 
-app.get('/s/:token/file', (req, res) => {
+app.get('/s/:token/file', publicShareLimiter, (req, res) => {
   const row = getShare(req.params.token);
   if (!row) return res.status(404).send('expired');
-  // Prefer the absolute path pinned at share creation (tolerates capturesPath changes).
-  // Fall back to re-resolving legacy share records.
-  let fullPath = row.abs_path && typeof row.abs_path === 'string' ? row.abs_path : null;
-  if (!fullPath) fullPath = sanitizeRelPath(row.file_path);
-  if (!fullPath || !fs.existsSync(fullPath)) return res.status(404).send('not found');
+  const fullPath = resolveSharedFile(row);
+  if (!fullPath) return res.status(404).send('not found');
+  res.set('Cache-Control', 'private, no-store');
   if (path.extname(fullPath).toLowerCase() === '.jxr') {
     res.set('Content-Type', 'image/vnd.ms-photo');
   }
   res.sendFile(fullPath);
 });
 
-app.get('/s/:token/meta', (req, res) => {
+app.get('/s/:token/meta', publicShareLimiter, (req, res) => {
   const row = getShare(req.params.token);
   if (!row) return res.status(404).json({ error: 'expired' });
+  res.set('Cache-Control', 'no-store');
   const ext = path.extname(row.file_path).toLowerCase();
   res.json({
     name: path.basename(row.file_path),
     type: VIDEO_EXT.has(ext) ? 'video' : 'image',
     expiresAt: row.expires_at,
   });
+});
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const message = err && err.message ? err.message : 'unknown error';
+  term.logError('http', `${req.method} ${req.originalUrl}: ${message}`);
+  const status = err && Number.isInteger(err.status) && err.status >= 400 ? err.status : 500;
+  if (req.accepts('json')) return res.status(status).json({ error: 'internal server error' });
+  return res.status(status).type('text/plain').send('internal server error');
 });
 
 app.listen(PORT, () => {

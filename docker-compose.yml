@@ -13,7 +13,8 @@ services:
     environment:
       NODE_ENV: production
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-auto}
-      TRUST_PROXY: ${TRUST_PROXY:-1}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      REQUIRE_SETUP_TOKEN: ${REQUIRE_SETUP_TOKEN:-true}
     restart: unless-stopped
 
 volumes:

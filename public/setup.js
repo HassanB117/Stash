@@ -1,6 +1,7 @@
 (function () {
   var account = {};
   var folder = '';
+  var MIN_PASSWORD_LENGTH = 12;
 
   function goTo(n) {
     document.querySelectorAll('.step-panel').forEach(function (p) { p.classList.remove('active'); });
@@ -15,13 +16,14 @@
     var u   = document.getElementById('username').value.trim();
     var p   = document.getElementById('password').value;
     var c   = document.getElementById('passwordConfirm').value;
+    var t   = document.getElementById('setupToken').value.trim();
     var err = document.getElementById('error-1');
     err.textContent = '';
     if (u.length < 2)  { err.textContent = 'username must be at least 2 characters'; return; }
     if (u.length > 32) { err.textContent = 'username must be at most 32 characters'; return; }
-    if (p.length < 8)  { err.textContent = 'password must be at least 8 characters'; return; }
+    if (p.length < MIN_PASSWORD_LENGTH)  { err.textContent = 'password must be at least ' + MIN_PASSWORD_LENGTH + ' characters'; return; }
     if (p !== c)       { err.textContent = 'passwords do not match'; return; }
-    account = { username: u, password: p };
+    account = { username: u, password: p, setupToken: t };
     goTo(2);
   });
 
@@ -37,7 +39,7 @@
       var check = await fetch('/api/setup/check-path', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: fp }),
+        body: JSON.stringify({ path: fp, setupToken: account.setupToken }),
       });
       var cd = await check.json();
       if (!cd.ok) { status.textContent = ''; err.textContent = cd.error || 'invalid path'; return; }
@@ -64,6 +66,7 @@
         body: JSON.stringify({
           username: account.username,
           password: account.password,
+          setupToken: account.setupToken,
           capturesPath: folder,
           renderMode: mode,
           hardwareDevice: 'auto',

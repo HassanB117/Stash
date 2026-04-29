@@ -26,7 +26,8 @@ USER node
 
 ENV NODE_ENV=production \
     PORT=7117 \
-    SESSION_COOKIE_SECURE=auto
+    SESSION_COOKIE_SECURE=auto \
+    REQUIRE_SETUP_TOKEN=true
 
 EXPOSE 7117
 VOLUME ["/app/data"]
