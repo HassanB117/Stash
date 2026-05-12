@@ -8,9 +8,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Rajdhani:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=grid-padding-fix-2">
 </head>
-<body>
+<body class="app-shell">
 
   <!-- ── Topbar ─────────────────────────────────────────────────────── -->
   <header class="topbar">
@@ -22,102 +22,104 @@
       </div>
     </div>
 
-    <div class="topbar-tabs">
-      <button class="tab-btn active" id="tabRecent">
+    <div class="topbar-tabs" role="tablist" aria-label="Capture sections">
+      <button class="tab-btn active" id="tabRecent" type="button" role="tab" aria-selected="true" aria-controls="panelRecent">
         RECENT <span class="tab-count" id="recentCount">0</span>
       </button>
-      <button class="tab-btn" id="tabGames">
+      <button class="tab-btn" id="tabGames" type="button" role="tab" aria-selected="false" aria-controls="panelGames">
         GAMES <span class="tab-count" id="gamesCount">0</span>
       </button>
-      <button class="tab-btn" id="tabStarred">
+      <button class="tab-btn" id="tabStarred" type="button" role="tab" aria-selected="false" aria-controls="panelStarred">
         STARRED <span class="tab-count" id="starredCount">0</span>
       </button>
     </div>
 
     <div class="topbar-actions">
-      <div class="status-live">
+      <div class="status-live" aria-live="polite">
         <div class="status-dot"></div>
-        LIVE
+        <span id="syncStatus">LIVE</span>
       </div>
-      <button type="button" class="ghost" id="refreshBtn" aria-label="Refresh"><span class="btn-icon" aria-hidden="true">↻</span><span class="btn-label">REFRESH</span></button>
-      <button type="button" class="ghost" id="settingsBtn" aria-label="Settings"><span class="btn-icon" aria-hidden="true">⚙</span><span class="btn-label">SETTINGS</span></button>
-      <button type="button" class="ghost" id="logoutBtn" aria-label="Log out"><span class="btn-icon" aria-hidden="true">⏻</span><span class="btn-label">LOGOUT</span></button>
+      <button type="button" class="ghost" id="refreshBtn" aria-label="Refresh captures" title="Refresh captures"><span class="btn-icon" aria-hidden="true">↻</span><span class="btn-label">REFRESH</span></button>
+      <button type="button" class="ghost" id="settingsBtn" aria-label="Open settings" title="Settings"><span class="btn-icon" aria-hidden="true">⚙</span><span class="btn-label">SETTINGS</span></button>
+      <button type="button" class="ghost" id="logoutBtn" aria-label="Log out" title="Log out"><span class="btn-icon" aria-hidden="true">⏻</span><span class="btn-label">LOGOUT</span></button>
     </div>
   </header>
 
   <!-- Hidden filters nav — kept so app.js renderFilters() doesn't error -->
-  <nav class="filters" id="filters"></nav>
+  <nav class="filters" id="filters" aria-hidden="true"></nav>
 
   <!-- ── RECENT tab panel ───────────────────────────────────────────── -->
-  <div class="tab-panel active" id="panelRecent">
-    <main class="grid" id="grid"></main>
+  <div class="tab-panel active" id="panelRecent" role="tabpanel" aria-labelledby="tabRecent">
+    <main class="grid" id="grid" aria-live="polite"></main>
     <div class="recent-footer">
       <button type="button" class="ghost" id="recentMoreBtn">LOAD MORE</button>
-      <div class="recent-count" id="recentShownCount"></div>
+      <div class="recent-count" id="recentShownCount" aria-live="polite"></div>
     </div>
   </div>
 
   <!-- ── STARRED tab panel ─────────────────────────────────────────── -->
-  <div class="tab-panel" id="panelStarred">
-    <main class="grid" id="starredGrid"></main>
+  <div class="tab-panel" id="panelStarred" role="tabpanel" aria-labelledby="tabStarred" hidden>
+    <main class="grid" id="starredGrid" aria-live="polite"></main>
   </div>
 
   <!-- ── GAMES tab panel ───────────────────────────────────────────── -->
-  <div class="tab-panel" id="panelGames">
+  <div class="tab-panel" id="panelGames" role="tabpanel" aria-labelledby="tabGames" hidden>
 
     <!-- Game library view -->
-    <div id="gamesLibrary" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+    <div id="gamesLibrary" class="panel-stack">
       <div class="games-header">
         <div class="games-search-wrap">
-          <span class="games-search-icon">⌕</span>
-          <input type="text" class="games-search" id="gamesSearch" placeholder="search games..." autocomplete="off" spellcheck="false">
+          <span class="games-search-icon" aria-hidden="true">⌕</span>
+          <input type="text" class="games-search" id="gamesSearch" placeholder="search games..." autocomplete="off" spellcheck="false" aria-label="Search games">
         </div>
-        <div class="platform-pills" id="platformPills" style="display:none;"></div>
-        <div class="games-count" id="gamesCountLabel"></div>
+        <div class="platform-pills" id="platformPills" aria-label="Platform filters" hidden></div>
+        <div class="games-count" id="gamesCountLabel" aria-live="polite"></div>
       </div>
       <div class="games-grid-wrap" id="gamesGrid"></div>
     </div>
 
     <!-- Game drill-down view (hidden until a game is selected) -->
-    <div id="gameDrilldown" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+    <div id="gameDrilldown" class="panel-stack" hidden>
       <div class="drilldown-bar">
-        <button class="drilldown-back" id="backToGames">← GAMES</button>
+        <button type="button" class="drilldown-back" id="backToGames">← GAMES</button>
         <div class="drilldown-sep"></div>
         <div class="drilldown-title" id="drilldownTitle"></div>
-        <div class="drilldown-count" id="drilldownCount"></div>
+        <div class="drilldown-count" id="drilldownCount" aria-live="polite"></div>
       </div>
-      <main class="grid" id="drilldownGrid"></main>
+      <main class="grid" id="drilldownGrid" aria-live="polite"></main>
     </div>
 
   </div>
 
   <!-- ── Lightbox ──────────────────────────────────────────────────── -->
-  <div class="lightbox" id="lightbox">
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Capture viewer" aria-hidden="true">
     <div class="lb-controls">
-      <button type="button" class="lb-star" id="lbStar">☆ STAR</button>
-      <button type="button" class="lb-share" id="lbShare">⤴ EXFIL LINK</button>
-      <button type="button" class="lb-close" id="lbClose">×</button>
+      <button type="button" class="lb-star" id="lbStar" aria-label="Star capture">☆ STAR</button>
+      <button type="button" class="lb-share" id="lbShare" aria-label="Create share link">⤴ SHARE</button>
+      <button type="button" class="lb-close" id="lbClose" aria-label="Close viewer">×</button>
     </div>
-    <button type="button" class="lb-nav lb-prev" id="lbPrev" hidden>&#8249;</button>
-    <button type="button" class="lb-nav lb-next" id="lbNext" hidden>&#8250;</button>
+    <button type="button" class="lb-nav lb-prev" id="lbPrev" aria-label="Previous capture" hidden>&#8249;</button>
+    <button type="button" class="lb-nav lb-next" id="lbNext" aria-label="Next capture" hidden>&#8250;</button>
     <div class="lb-content" id="lbContent"></div>
-    <div class="lb-meta" id="lbMeta" style="display:none;">
+    <div class="lb-meta" id="lbMeta" hidden>
       <span class="lb-meta-game" id="lbGame"></span>
       <div class="lb-meta-sep"></div>
+      <span class="lb-meta-platform" id="lbPlatform" hidden></span>
+      <div class="lb-meta-sep" id="lbPlatformSep" hidden></div>
       <span class="lb-meta-name" id="lbName"></span>
       <div class="lb-meta-sep"></div>
       <span class="lb-meta-date" id="lbDate"></span>
-      <div class="lb-meta-sep" id="lbMetaSep2" style="display:none"></div>
-      <span class="lb-meta-detail" id="lbDetail" style="display:none"></span>
+      <div class="lb-meta-sep" id="lbMetaSep2" hidden></div>
+      <span class="lb-meta-detail" id="lbDetail" hidden></span>
     </div>
   </div>
 
   <!-- ── Share modal ───────────────────────────────────────────────── -->
-  <div class="modal" id="shareModal">
-    <div class="modal-card">
-      <div class="modal-title">EXFIL LINK</div>
+  <div class="modal" id="shareModal" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle" aria-hidden="true">
+    <div class="modal-card" role="document">
+      <div class="modal-title" id="shareModalTitle">SHARE LINK</div>
       <div class="modal-sub">EXPIRES IN 24 HOURS · READ-ONLY</div>
-      <input type="text" id="shareUrl" readonly>
+      <input type="text" id="shareUrl" readonly aria-label="Share URL">
       <div class="modal-actions">
         <button type="button" id="copyBtn">⊕ COPY</button>
         <button type="button" class="ghost" id="shareClose">CLOSE</button>
@@ -126,9 +128,9 @@
   </div>
 
   <!-- ── Settings modal ────────────────────────────────────────────── -->
-  <div class="modal" id="settingsModal">
-    <div class="modal-card">
-      <div class="modal-title">SYSTEM CONFIG</div>
+  <div class="modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle" aria-hidden="true">
+    <div class="modal-card modal-card-wide" role="document">
+      <div class="modal-title" id="settingsModalTitle">SYSTEM CONFIG</div>
       <div class="modal-sub">// SETTINGS</div>
 
       <div class="settings-section">
@@ -137,17 +139,26 @@
         <div class="modal-actions">
           <button type="button" id="saveFolderBtn">UPDATE</button>
         </div>
-        <div class="settings-msg" id="folderMsg"></div>
+        <div class="settings-msg" id="folderMsg" aria-live="polite"></div>
+      </div>
+
+      <div class="settings-section">
+        <label for="siteUrlInput">// PUBLIC SITE URL</label>
+        <input type="text" id="siteUrlInput" spellcheck="false" autocomplete="off" placeholder="https://stash.example.com">
+        <div class="modal-actions">
+          <button type="button" id="saveSiteUrlBtn">UPDATE</button>
+        </div>
+        <div class="settings-msg" id="siteUrlMsg" aria-live="polite"></div>
       </div>
 
       <div class="settings-section">
         <label>// CHANGE PASSWORD</label>
         <input type="password" id="currentPass" placeholder="current password" autocomplete="current-password">
-        <input type="password" id="newPass" placeholder="new password (12+ chars)" autocomplete="new-password">
+        <input type="password" id="newPass" placeholder="new password (8+ chars)" autocomplete="new-password">
         <div class="modal-actions">
           <button type="button" id="savePassBtn">CHANGE</button>
         </div>
-        <div class="settings-msg" id="passMsg"></div>
+        <div class="settings-msg" id="passMsg" aria-live="polite"></div>
       </div>
 
       <div class="settings-section">
@@ -175,29 +186,54 @@
         <div class="modal-actions">
           <button type="button" id="saveRenderBtn">APPLY</button>
         </div>
-        <div class="settings-msg" id="renderMsg"></div>
+        <div class="settings-msg" id="renderMsg" aria-live="polite"></div>
       </div>
 
-      <div class="modal-actions" style="margin-top:20px;">
+      <div class="settings-section">
+        <label>// SECURITY</label>
+        <div id="securityEnvNotice" class="settings-msg" style="display:none" aria-live="polite"></div>
+
+        <label for="trustProxySelect" class="stacked-label">trust proxy</label>
+        <select id="trustProxySelect">
+          <option value="off">Off — direct connections only</option>
+          <option value="on">On — trust any proxy</option>
+          <option value="hops">Hops — trust N proxies</option>
+        </select>
+        <input type="number" id="trustProxyHops" min="1" max="9" step="1" value="1" class="compact-number" style="display:none;">
+
+        <label for="cookieSecureSelect" class="stacked-label">cookie secure</label>
+        <select id="cookieSecureSelect">
+          <option value="auto">Auto — secure when request is HTTPS</option>
+          <option value="true">Always — require HTTPS</option>
+          <option value="false">Never — allow plain HTTP</option>
+        </select>
+
+        <div class="modal-actions">
+          <button type="button" id="saveSecurityBtn">SAVE</button>
+        </div>
+        <div class="settings-msg" id="securityMsg" aria-live="polite"></div>
+      </div>
+
+      <div class="modal-actions modal-actions-footer">
         <button type="button" class="ghost" id="settingsClose">CLOSE</button>
       </div>
-      <div style="margin-top:16px;text-align:center;font-size:9px;color:var(--text-dim);letter-spacing:3px;">STASH v1.3.3</div>
+      <div class="modal-version">STASH <span data-app-version></span></div>
     </div>
   </div>
 
   <!-- Mobile bottom tab bar (hidden on desktop via CSS) -->
-  <nav class="mobile-tabs" id="mobileTabs">
-    <button class="mobile-tab active" id="mTabRecent">
+  <nav class="mobile-tabs" id="mobileTabs" role="tablist" aria-label="Capture sections">
+    <button class="mobile-tab active" id="mTabRecent" type="button" role="tab" aria-selected="true" aria-controls="panelRecent">
       <span class="mobile-tab-icon">⊞</span>
       <span class="mobile-tab-label">RECENT</span>
       <span class="mobile-tab-badge" id="mBadgeRecent"></span>
     </button>
-    <button class="mobile-tab" id="mTabGames">
+    <button class="mobile-tab" id="mTabGames" type="button" role="tab" aria-selected="false" aria-controls="panelGames">
       <span class="mobile-tab-icon">◈</span>
       <span class="mobile-tab-label">GAMES</span>
       <span class="mobile-tab-badge" id="mBadgeGames"></span>
     </button>
-    <button class="mobile-tab" id="mTabStarred">
+    <button class="mobile-tab" id="mTabStarred" type="button" role="tab" aria-selected="false" aria-controls="panelStarred">
       <span class="mobile-tab-icon">★</span>
       <span class="mobile-tab-label">STARRED</span>
       <span class="mobile-tab-badge" id="mBadgeStarred"></span>

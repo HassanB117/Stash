@@ -132,6 +132,11 @@ SESSION_COOKIE_SECURE=auto
 Only set `TRUST_PROXY` when the Node process is reachable solely through that
 trusted proxy. Do not expose Stash directly to the public internet over plain HTTP.
 
+Both settings can also be configured from **Settings → Security** in the web UI
+and persisted to `data/config.json`. Environment variables always take precedence
+when set — the UI displays a "managed by env" notice and disables the input in
+that case. Changes saved through the UI require a server restart to take effect.
+
 ## App Environment Variables
 
 | Variable | Default | Purpose |
@@ -142,7 +147,7 @@ trusted proxy. Do not expose Stash directly to the public internet over plain HT
 | `SESSION_COOKIE_SECURE` | `NODE_ENV === production` | Session cookie secure mode: `true`, `false`, or `auto` |
 | `REQUIRE_SETUP_TOKEN` | `true` | Require the first-run setup token before setup APIs work |
 | `SETUP_TOKEN` | generated | Optional explicit first-run setup token |
-| `MIN_PASSWORD_LENGTH` | `12` | Minimum length for new passwords |
+| `MIN_PASSWORD_LENGTH` | `8` | Minimum length for new passwords |
 | `MAX_PASSWORD_LENGTH` | `1024` | Maximum accepted password length |
 | `SESSION_MAX_AGE` | `604800000` | Session lifetime in milliseconds |
 | `ALLOW_INSECURE_SITE_URL` | `false` | Allow non-local `http://` public share URLs |
@@ -219,11 +224,11 @@ There is currently no automated test suite.
 ### Terminal Output
 
 Startup logs show the local URL, setup state, setup token when needed, render
-mode, sharing status, and public-web security hints. Render logs use compact
-paths and SW/HW badges so Docker logs stay readable while interactive terminals
-get polished progress bars. Pregeneration prioritizes newest captures first and
-backs off temporarily from files that fail to render. Set `NO_COLOR=1` to
-disable ANSI colors.
+mode, sharing status, and public-web security hints. Render logs emit one line
+per file with an HW/SW badge, a compact capture path, and elapsed time — the
+same format in Docker and interactive terminals. Pregeneration prioritizes
+newest captures first and backs off temporarily from files that fail to render.
+Set `NO_COLOR=1` to disable ANSI colors.
 
 ## Reset Setup
 

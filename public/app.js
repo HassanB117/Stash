@@ -71,6 +71,7 @@
   const recentMoreBtn   = $('recentMoreBtn');
   const recentShownCount = $('recentShownCount');
   const refreshBtn      = $('refreshBtn');
+  const syncStatus      = $('syncStatus');
 
   // ── Tab switching ──────────────────────────────────────────────────────
   var tabRecent    = $('tabRecent');
@@ -81,20 +82,23 @@
   var panelStarred = $('panelStarred');
 
   function setTab(name) {
-    tabRecent.classList.toggle('active', name === 'recent');
-    tabGames.classList.toggle('active', name === 'games');
-    tabStarred.classList.toggle('active', name === 'starred');
-    panelRecent.classList.toggle('active', name === 'recent');
-    panelGames.classList.toggle('active', name === 'games');
-    panelStarred.classList.toggle('active', name === 'starred');
-    // Sync mobile bottom tabs
-    var mtr = $('mTabRecent');
-    if (mtr) {
-      mtr.classList.toggle('active', name === 'recent');
-      $('mTabGames').classList.toggle('active', name === 'games');
-      $('mTabStarred').classList.toggle('active', name === 'starred');
-    }
+    [
+      { key: 'recent', tab: tabRecent, panel: panelRecent, mobile: $('mTabRecent') },
+      { key: 'games', tab: tabGames, panel: panelGames, mobile: $('mTabGames') },
+      { key: 'starred', tab: tabStarred, panel: panelStarred, mobile: $('mTabStarred') },
+    ].forEach(function (entry) {
+      var active = name === entry.key;
+      entry.tab.classList.toggle('active', active);
+      entry.tab.setAttribute('aria-selected', active ? 'true' : 'false');
+      entry.panel.classList.toggle('active', active);
+      entry.panel.hidden = !active;
+      if (entry.mobile) {
+        entry.mobile.classList.toggle('active', active);
+        entry.mobile.setAttribute('aria-selected', active ? 'true' : 'false');
+      }
+    });
     if (name === 'games') showLibrary();
+    else currentDrillGame = null;
     if (name === 'starred') renderStarredGrid();
   }
 
@@ -111,20 +115,22 @@
   var drilldownGrid = $('drilldownGrid');
 
   function showLibrary() {
-    gamesLibrary.style.display  = 'flex';
-    gameDrilldown.style.display = 'none';
+    gamesLibrary.hidden = false;
+    gameDrilldown.hidden = true;
     currentDrillGame = null;
+    if (gamesSearchEl) gamesSearchEl.focus({ preventScroll: true });
   }
 
   function showDrilldown(game) {
     currentDrillGame = game;
-    gamesLibrary.style.display  = 'none';
-    gameDrilldown.style.display = 'flex';
+    gamesLibrary.hidden = true;
+    gameDrilldown.hidden = false;
     var dn = (gameMeta[game] && gameMeta[game].displayName) || game;
     $('drilldownTitle').textContent = dn.toUpperCase();
     var items = allCaptures[game] || [];
     $('drilldownCount').textContent = items.length + ' CAPTURES';
     renderDrilldownGrid(game, items);
+    $('backToGames').focus({ preventScroll: true });
   }
 
   $('backToGames').addEventListener('click', showLibrary);
@@ -138,6 +144,44 @@
     $('hello').textContent = cfg.username + "'s archive";
     $('folderLabel').textContent = cfg.capturesPath;
     $('folderInput').value = cfg.capturesPath;
+    $('siteUrlInput').value = cfg.siteUrl || '';
+    populateSecuritySection(cfg);
+  }
+
+  function populateSecuritySection(cfg) {
+    const tpSel = $('trustProxySelect');
+    const tpHops = $('trustProxyHops');
+    const csSel = $('cookieSecureSelect');
+    const notice = $('securityEnvNotice');
+    const saveBtn = $('saveSecurityBtn');
+    if (!tpSel || !csSel) return;
+
+    const tpEnv = !!cfg.trustProxyManagedByEnv;
+    const csEnv = !!cfg.cookieSecureManagedByEnv;
+
+    const tp = cfg.trustProxy;
+    if (tp === true) { tpSel.value = 'on'; tpHops.style.display = 'none'; }
+    else if (Number.isInteger(tp) && tp >= 1) { tpSel.value = 'hops'; tpHops.value = tp; tpHops.style.display = ''; }
+    else { tpSel.value = 'off'; tpHops.style.display = 'none'; }
+
+    const cs = cfg.cookieSecure;
+    csSel.value = cs === true ? 'true' : cs === false ? 'false' : 'auto';
+
+    tpSel.disabled = tpEnv;
+    tpHops.disabled = tpEnv;
+    csSel.disabled = csEnv;
+    saveBtn.disabled = tpEnv && csEnv;
+
+    const managed = [];
+    if (tpEnv) managed.push('TRUST_PROXY');
+    if (csEnv) managed.push('SESSION_COOKIE_SECURE');
+    if (managed.length) {
+      notice.textContent = '⚠ managed by env: ' + managed.join(', ');
+      notice.className = 'settings-msg bad';
+      notice.style.display = '';
+    } else {
+      notice.style.display = 'none';
+    }
   }
 
   async function loadFavorites() {
@@ -255,8 +299,10 @@
     if (!refreshBtn) return;
     var busy = !!refreshInFlight || recentLoading;
     refreshBtn.disabled = busy;
+    refreshBtn.setAttribute('aria-busy', busy ? 'true' : 'false');
     var label = refreshBtn.querySelector('.btn-label');
     if (label) label.textContent = busy ? 'SYNCING...' : 'REFRESH';
+    if (syncStatus) syncStatus.textContent = busy ? 'SYNCING' : 'LIVE';
   }
 
   async function refreshLibrary(force) {
@@ -273,16 +319,55 @@
     return refreshInFlight;
   }
 
+  function openDialog(el, focusTarget) {
+    if (!el) return;
+    var wasOpen = el.classList.contains('open');
+    if (!wasOpen) el._returnFocus = document.activeElement;
+    el.classList.add('open');
+    el.setAttribute('aria-hidden', 'false');
+    if (wasOpen) return;
+    setTimeout(function () {
+      var target = focusTarget || el.querySelector('button, input, select, [tabindex]:not([tabindex="-1"])');
+      if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function closeDialog(el, restoreFocus) {
+    if (!el) return;
+    el.classList.remove('open');
+    el.setAttribute('aria-hidden', 'true');
+    if (restoreFocus === false) return;
+    var target = el._returnFocus;
+    if (target && document.contains(target) && typeof target.focus === 'function') {
+      target.focus({ preventScroll: true });
+    }
+  }
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
       return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
     });
   }
 
+  function renderEmptyState(title, copy) {
+    return '<div class="empty-state">' +
+      '<div class="empty-title">' + escapeHtml(title) + '</div>' +
+      '<div class="empty-copy">' + escapeHtml(copy) + '</div>' +
+    '</div>';
+  }
+
   function parsePlatform(folderName) {
     var idx = folderName.lastIndexOf(' - ');
     if (idx === -1) return { displayName: folderName, platform: null };
     return { displayName: folderName.slice(0, idx), platform: folderName.slice(idx + 3) };
+  }
+
+  function platformBrandKey(platform) {
+    var value = String(platform || '').toLowerCase();
+    if (value.includes('xbox')) return 'xbox';
+    if (value.includes('playstation')) return 'playstation';
+    if (value.includes('nintendo')) return 'nintendo';
+    return '';
   }
 
   function renderPlatformPills() {
@@ -293,11 +378,14 @@
       if (m.platform && platforms.indexOf(m.platform) === -1) platforms.push(m.platform);
     });
     platforms.sort();
-    if (platforms.length === 0) { pillsEl.style.display = 'none'; return; }
-    pillsEl.style.display = '';
+    if (platforms.length === 0) { pillsEl.hidden = true; return; }
+    pillsEl.hidden = false;
     var tags = ['All'].concat(platforms);
     pillsEl.innerHTML = tags.map(function (p) {
-      return '<button class="platform-pill' + (p === platformFilter ? ' active' : '') +
+      var brand = platformBrandKey(p);
+      var brandClass = brand ? ' platform-pill-branded platform-pill-' + brand : '';
+      return '<button class="platform-pill' + brandClass + (p === platformFilter ? ' active' : '') +
+             '" type="button" aria-pressed="' + (p === platformFilter ? 'true' : 'false') +
              '" data-platform="' + escapeHtml(p) + '">' + escapeHtml(p) + '</button>';
     }).join('');
     pillsEl.querySelectorAll('.platform-pill').forEach(function (btn) {
@@ -329,7 +417,7 @@
   function renderRecentGrid(opts) {
     opts = opts || {};
     if (recentItems.length === 0) {
-      grid.innerHTML = '<div class="empty">// NO CAPTURES DETECTED</div>';
+      grid.innerHTML = renderEmptyState('NO CAPTURES DETECTED', 'Add screenshots or clips to your capture folder, then refresh the archive.');
       renderedRecentCount = 0;
       updateRecentMoreButton();
       return;
@@ -372,7 +460,7 @@
       var moreLeft = recentItems.length < recentTotal;
       recentMoreBtn.style.display = moreLeft ? '' : 'none';
       recentMoreBtn.disabled = !moreLeft || recentLoading;
-      recentMoreBtn.textContent = moreLeft ? 'LOAD MORE' : 'ALL LOADED';
+      recentMoreBtn.textContent = recentLoading ? 'LOADING...' : (moreLeft ? 'LOAD MORE' : 'ALL LOADED');
     }
   }
 
@@ -388,7 +476,7 @@
     items.sort(function (a, b) { return b.mtime - a.mtime; });
     var sg = $('starredGrid');
     if (items.length === 0) {
-      sg.innerHTML = '<div class="empty">// NO STARRED CAPTURES</div>';
+      sg.innerHTML = renderEmptyState('NO STARRED CAPTURES', 'Star captures from the grid or viewer to build a quick highlight shelf.');
       return;
     }
     sg.innerHTML = items.map(function (item, i) { return renderTileHTML(item, i); }).join('');
@@ -399,7 +487,7 @@
   function renderDrilldownGrid(game, rawItems) {
     var items = rawItems.map(function (f) { return Object.assign({}, f, { game: game }); });
     if (items.length === 0) {
-      drilldownGrid.innerHTML = '<div class="empty">// NO CAPTURES</div>';
+      drilldownGrid.innerHTML = renderEmptyState('NO CAPTURES', 'This game folder is present, but no supported capture files were found.');
       return;
     }
     drilldownGrid.innerHTML = items.map(function (item, i) {
@@ -415,14 +503,21 @@
     var previewUrl = '/preview/' + encodeURIComponent(item.path);
     var date       = formatDate(item.mtime);
     var starred    = favorites.has(item.path);
+    var gameLabel   = ((gameMeta[item.game] && gameMeta[item.game].displayName) || parsePlatform(item.game).displayName).toUpperCase();
+    var safeName    = escapeHtml(item.name);
+    var safePath    = escapeHtml(item.path);
+    var tileLabel   = escapeHtml(gameLabel.slice(0, 24));
+    var ariaLabel   = escapeHtml('Open ' + item.name + ' from ' + gameLabel);
     var media      = item.type === 'video'
-      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + previewUrl + '" data-file="' + fileUrl + '"></video><div class="badge" data-dur-badge data-dur-path="' + escapeHtml(item.path) + '">▶ CLIP</div>'
-      : '<img src="' + thumbUrl + '" alt="' + escapeHtml(item.name) + '" loading="lazy" data-fallback="' + fileUrl + '">';
-    return '<div class="tile" data-index="' + i + '">' +
-      '<button class="tile-star' + (starred ? ' starred' : '') + '" data-path="' + escapeHtml(item.path) + '">' + (starred ? '★' : '☆') + '</button>' +
+      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + previewUrl + '" data-file="' + fileUrl + '"></video><div class="badge" data-dur-badge data-dur-path="' + safePath + '">▶ CLIP</div>'
+      : '<img src="' + thumbUrl + '" alt="' + safeName + '" loading="lazy" data-fallback="' + fileUrl + '">';
+    return '<div class="tile" role="button" tabindex="0" data-index="' + i + '" aria-label="' + ariaLabel + '">' +
+      '<button type="button" class="tile-star' + (starred ? ' starred' : '') +
+        '" data-path="' + safePath + '" aria-label="' + (starred ? 'Unstar ' : 'Star ') + safeName +
+        '" title="' + (starred ? 'Unstar capture' : 'Star capture') + '">' + (starred ? '★' : '☆') + '</button>' +
       media +
       '<div class="tile-label">' +
-        '<span>' + escapeHtml(((gameMeta[item.game] && gameMeta[item.game].displayName) || parsePlatform(item.game).displayName).toUpperCase().slice(0, 18)) + '</span>' +
+        '<span class="tile-title">' + tileLabel + '</span>' +
         '<span class="tile-date">' + date + '</span>' +
       '</div>' +
     '</div>';
@@ -470,6 +565,12 @@
         });
       }
       tile.addEventListener('click', function () { openLightbox(item, items, idx); });
+      tile.addEventListener('keydown', function (e) {
+        if (e.target !== tile) return;
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        openLightbox(item, items, idx);
+      });
     });
     if (durObserver) {
       container.querySelectorAll('[data-dur-badge]').forEach(function (b) {
@@ -496,12 +597,15 @@
         if (btn.dataset.path === filePath) {
           btn.textContent = data.starred ? '★' : '☆';
           btn.classList.toggle('starred', data.starred);
+          btn.setAttribute('aria-label', data.starred ? 'Unstar capture' : 'Star capture');
+          btn.title = data.starred ? 'Unstar capture' : 'Star capture';
         }
       });
       if (currentItem && currentItem.path === filePath) {
         var lbStar = $('lbStar');
         lbStar.textContent = data.starred ? '★ STARRED' : '☆ STAR';
         lbStar.classList.toggle('starred', data.starred);
+        lbStar.setAttribute('aria-label', data.starred ? 'Unstar capture' : 'Star capture');
       }
       updateCounts();
       syncActivePanelsAfterReload();
@@ -511,6 +615,12 @@
   function formatDate(mtime) {
     var d = new Date(mtime);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  function formatLightboxDate(mtime) {
+    var d = new Date(mtime);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', { month: 'short' }) + ' ' + d.getDate() + ' ' + d.getFullYear();
   }
 
   // ── Games library grid ────────────────────────────────────────────────
@@ -532,8 +642,12 @@
     if (platformFilter !== 'All') {
       games = games.filter(function (g) { return gameMeta[g] && gameMeta[g].platform === platformFilter; });
     }
+    if (gamesCountEl) {
+      var q = gamesSearchEl ? gamesSearchEl.value.trim() : '';
+      gamesCountEl.textContent = q ? games.length + ' RESULTS' : games.length + (games.length === 1 ? ' GAME' : ' GAMES');
+    }
     if (games.length === 0) {
-      gamesGridEl.innerHTML = '<div class="empty" style="grid-column:1/-1">// NO GAMES FOUND</div>';
+      gamesGridEl.innerHTML = renderEmptyState('NO GAMES FOUND', 'Try a different search or platform filter.');
       return;
     }
     gamesGridEl.innerHTML = games.map(function (game) {
@@ -577,7 +691,8 @@
           '</div>';
       }
 
-      return '<div class="game-card" data-game="' + escapeHtml(game) + '">' +
+      return '<div class="game-card" role="button" tabindex="0" data-game="' + escapeHtml(game) +
+        '" aria-label="Open ' + escapeHtml(displayName) + ', ' + count + (count === 1 ? ' capture' : ' captures') + '">' +
         artHtml +
         '<div class="game-card-info">' +
           '<div class="game-card-name">' + escapeHtml(displayName) + '</div>' +
@@ -591,6 +706,11 @@
 
     gamesGridEl.querySelectorAll('.game-card').forEach(function (card) {
       card.addEventListener('click', function () {
+        showDrilldown(card.dataset.game);
+      });
+      card.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
         showDrilldown(card.dataset.game);
       });
     });
@@ -630,26 +750,32 @@
     } else {
       var img = document.createElement('img');
       img.src = fileUrl;
-      img.alt = escapeHtml(item.name);
+      img.alt = item.name;
       lbContent.appendChild(img);
     }
 
-    var displayGame = (gameMeta[item.game] && gameMeta[item.game].displayName) || item.game;
+    var parsedGame = gameMeta[item.game] || parsePlatform(item.game);
+    var displayGame = parsedGame.displayName || item.game;
+    var platform = parsedGame.platform || '';
     $('lbGame').textContent = displayGame.toUpperCase();
+    $('lbPlatform').textContent = platform.toUpperCase();
+    $('lbPlatform').hidden = !platform;
+    $('lbPlatformSep').hidden = !platform;
     $('lbName').textContent = item.name;
-    $('lbDate').textContent = formatDate(item.mtime);
+    $('lbDate').textContent = formatLightboxDate(item.mtime);
 
     var starred = favorites.has(item.path);
     $('lbStar').textContent = starred ? '★ STARRED' : '☆ STAR';
     $('lbStar').classList.toggle('starred', starred);
+    $('lbStar').setAttribute('aria-label', starred ? 'Unstar capture' : 'Star capture');
 
-    $('lbDetail').style.display = 'none';
-    $('lbMetaSep2').style.display = 'none';
+    $('lbDetail').hidden = true;
+    $('lbMetaSep2').hidden = true;
     fetchFileMeta(item.path);
 
     updateNavArrows();
-    lbMeta.style.display = 'flex';
-    lightbox.classList.add('open');
+    lbMeta.hidden = false;
+    openDialog(lightbox, $('lbClose'));
   }
 
   function closeLightbox() {
@@ -660,11 +786,13 @@
       try { vid.load(); } catch (e) {}
     }
     if (document.fullscreenElement) document.exitFullscreen();
-    lightbox.classList.remove('open');
+    closeDialog(lightbox);
     lbContent.innerHTML = '';
-    lbMeta.style.display = 'none';
-    $('lbDetail').style.display = 'none';
-    $('lbMetaSep2').style.display = 'none';
+    lbMeta.hidden = true;
+    $('lbPlatform').hidden = true;
+    $('lbPlatformSep').hidden = true;
+    $('lbDetail').hidden = true;
+    $('lbMetaSep2').hidden = true;
     currentItem = null;
     lightboxQueue = [];
     lightboxIndex = -1;
@@ -683,8 +811,8 @@
     if (m.dimensions) parts.push(m.dimensions);
     if (m.duration) parts.push(m.duration);
     $('lbDetail').textContent = parts.join(' · ');
-    $('lbDetail').style.display = '';
-    $('lbMetaSep2').style.display = '';
+    $('lbDetail').hidden = false;
+    $('lbMetaSep2').hidden = false;
   }
 
   $('lbClose').addEventListener('click', closeLightbox);
@@ -701,8 +829,8 @@
 
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
-      if (shareModal.classList.contains('open'))         shareModal.classList.remove('open');
-      else if (settingsModal.classList.contains('open')) settingsModal.classList.remove('open');
+      if (shareModal.classList.contains('open'))         closeDialog(shareModal);
+      else if (settingsModal.classList.contains('open')) closeDialog(settingsModal);
       else if (lightbox.classList.contains('open'))      closeLightbox();
       else if (currentDrillGame)                         showLibrary();
       return;
@@ -746,7 +874,7 @@
       var data = await res.json();
       if (!res.ok) { alert(data.error || 'failed'); return; }
       shareUrlEl.value = data.url.startsWith('http') ? data.url : window.location.origin + data.url;
-      shareModal.classList.add('open');
+      openDialog(shareModal, shareUrlEl);
     } catch { alert('share failed'); }
   });
 
@@ -758,8 +886,8 @@
     });
   });
 
-  $('shareClose').addEventListener('click', function () { shareModal.classList.remove('open'); });
-  shareModal.addEventListener('click', function (e) { if (e.target === shareModal) shareModal.classList.remove('open'); });
+  $('shareClose').addEventListener('click', function () { closeDialog(shareModal); });
+  shareModal.addEventListener('click', function (e) { if (e.target === shareModal) closeDialog(shareModal); });
 
   // ── Settings ───────────────────────────────────────────────────────────
   async function loadRenderCapabilities() {
@@ -810,11 +938,11 @@
     $('renderMsg').textContent = '';
     $('currentPass').value = '';
     $('newPass').value = '';
-    settingsModal.classList.add('open');
+    openDialog(settingsModal, $('folderInput'));
     loadRenderCapabilities();
   });
-  $('settingsClose').addEventListener('click', function () { settingsModal.classList.remove('open'); });
-  settingsModal.addEventListener('click', function (e) { if (e.target === settingsModal) settingsModal.classList.remove('open'); });
+  $('settingsClose').addEventListener('click', function () { closeDialog(settingsModal); });
+  settingsModal.addEventListener('click', function (e) { if (e.target === settingsModal) closeDialog(settingsModal); });
 
   if (refreshBtn) {
     refreshBtn.addEventListener('click', function () {
@@ -838,6 +966,32 @@
         msg.className = 'settings-msg ok';
         await Promise.all([loadConfig(), loadFavorites()]);
         await refreshLibrary(true);
+      } else {
+        msg.textContent = '✗ ' + (data.error || 'failed');
+        msg.className = 'settings-msg bad';
+      }
+    } catch {
+      msg.textContent = '✗ NETWORK ERROR';
+      msg.className = 'settings-msg bad';
+    }
+  });
+
+  $('saveSiteUrlBtn').addEventListener('click', async function () {
+    var newUrl = $('siteUrlInput').value.trim();
+    var msg = $('siteUrlMsg');
+    msg.textContent = '';
+    try {
+      var res = await fetch('/api/config/url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteUrl: newUrl }),
+      });
+      var data = await res.json();
+      if (res.ok) {
+        siteUrl = data.siteUrl || '';
+        $('siteUrlInput').value = siteUrl;
+        msg.textContent = siteUrl ? '✓ SITE URL UPDATED' : '✓ SITE URL CLEARED';
+        msg.className = 'settings-msg ok';
       } else {
         msg.textContent = '✗ ' + (data.error || 'failed');
         msg.className = 'settings-msg bad';
@@ -891,6 +1045,53 @@
         msg.className = 'settings-msg ok';
         $('currentPass').value = '';
         $('newPass').value = '';
+      } else {
+        msg.textContent = '✗ ' + (data.error || 'failed');
+        msg.className = 'settings-msg bad';
+      }
+    } catch {
+      msg.textContent = '✗ NETWORK ERROR';
+      msg.className = 'settings-msg bad';
+    }
+  });
+
+  $('trustProxySelect').addEventListener('change', function () {
+    $('trustProxyHops').style.display = this.value === 'hops' ? '' : 'none';
+  });
+
+  $('saveSecurityBtn').addEventListener('click', async function () {
+    var msg = $('securityMsg');
+    msg.textContent = '';
+    var tpSel = $('trustProxySelect').value;
+    var tpHops = parseInt($('trustProxyHops').value, 10);
+    var csSel = $('cookieSecureSelect').value;
+
+    var trustProxy;
+    if (tpSel === 'on') trustProxy = true;
+    else if (tpSel === 'hops') {
+      if (!Number.isInteger(tpHops) || tpHops < 1 || tpHops > 9) {
+        msg.textContent = '✗ hops must be 1–9';
+        msg.className = 'settings-msg bad';
+        return;
+      }
+      trustProxy = tpHops;
+    } else trustProxy = false;
+
+    var cookieSecure;
+    if (csSel === 'true') cookieSecure = true;
+    else if (csSel === 'false') cookieSecure = false;
+    else cookieSecure = 'auto';
+
+    try {
+      var res = await fetch('/api/config/security', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trustProxy: trustProxy, cookieSecure: cookieSecure }),
+      });
+      var data = await res.json();
+      if (res.ok) {
+        msg.textContent = '✓ SAVED — RESTART SERVER TO APPLY';
+        msg.className = 'settings-msg ok';
       } else {
         msg.textContent = '✗ ' + (data.error || 'failed');
         msg.className = 'settings-msg bad';

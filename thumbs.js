@@ -1,290 +1,35 @@
+// Thumbnail and preview rendering. Owns everything under data/thumbs/.
+//
+// Mid-session driver changes (e.g. a GPU appearing/disappearing) require a
+// render-mode toggle from Settings to re-probe — the encoder probe is cached
+// for the process lifetime and only invalidated by setRenderMode().
+
 const path = require('path');
 const fs = require('fs');
-const { execFile, spawn } = require('child_process');
+const { execFile } = require('child_process');
 const term = require('./term');
 
 const THUMB_DIR = path.join(__dirname, 'data', 'thumbs');
 const TMP_DIR = path.join(THUMB_DIR, '_tmp');
 const THUMB_SIZE = 480;
 const PREV_W = THUMB_SIZE;
-const PREGENERATE_CONCURRENCY = readBoundedIntEnv('PREGENERATE_CONCURRENCY', 3, 1, 8);
-const RENDER_FAILURE_BACKOFF_MS = readPositiveIntEnv('RENDER_FAILURE_BACKOFF_MS', 30 * 60 * 1000);
-const pending = new Map();
-const renderFailures = new Map();
-let pregenerateActive = false;
-let pregenerateQueued = null;
-
-// One-time ffmpeg / ffprobe availability checks. Result is cached.
-let ffmpegOk = null;
-let ffprobeOk = null;
 
 function readPositiveIntEnv(name, fallback) {
-  const raw = process.env[name];
-  const value = Number(raw);
+  const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
-function readBoundedIntEnv(name, fallback, min, max) {
-  return Math.max(min, Math.min(max, readPositiveIntEnv(name, fallback)));
-}
+const PREGENERATE_CONCURRENCY = Math.max(1, Math.min(8, readPositiveIntEnv('PREGENERATE_CONCURRENCY', 3)));
+const RENDER_FAILURE_BACKOFF_MS = readPositiveIntEnv('RENDER_FAILURE_BACKOFF_MS', 30 * 60 * 1000);
 
-function checkBinary(bin, flagged) {
-  return new Promise((resolve) => {
-    execFile(bin, ['-version'], { timeout: 5000 }, (err) => {
-      const ok = !err;
-      if (!ok) term.logWarn('thumbs', `${bin} not found - ${flagged} disabled`);
-      resolve(ok);
-    });
-  });
-}
-
-function checkFfmpeg() {
-  if (ffmpegOk !== null) return Promise.resolve(ffmpegOk);
-  return checkBinary('ffmpeg', 'all thumbnail and preview rendering')
-    .then((ok) => (ffmpegOk = ok));
-}
-
-function checkFfprobe() {
-  if (ffprobeOk !== null) return Promise.resolve(ffprobeOk);
-  return checkBinary('ffprobe', 'media metadata')
-    .then((ok) => (ffprobeOk = ok));
-}
-
-// ── Hardware encoders ──────────────────────────────────────────────────
-// Discrete hardware encoders first (NVENC, AMF), Intel QSV next, and Linux
-// VAAPI last for containers or hosts that expose /dev/dri render devices.
 const DEFAULT_PREVIEW_FILTER = `scale=${PREV_W}:-2:flags=bicubic`;
+// mjpeg requires even dims for yuvj420p output.
+const THUMB_SCALE_FILTER =
+  `scale='min(iw,${THUMB_SIZE})':'min(ih,${THUMB_SIZE})':` +
+  `force_original_aspect_ratio=decrease:force_divisible_by=2`;
+const SOFTWARE_ENCODE_ARGS = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '26'];
 const YUV420_OUTPUT_ARGS = ['-pix_fmt', 'yuv420p'];
 const AUTO_HARDWARE_DEVICE = 'auto';
-const D3D11_ADAPTER_SCAN_LIMIT = 8;
-
-function findVaapiDevice() {
-  if (process.platform === 'win32') return null;
-  const envDevice = process.env.VAAPI_DEVICE;
-  if (envDevice && fs.existsSync(envDevice)) return envDevice;
-  const driDir = '/dev/dri';
-  try {
-    const entries = fs.readdirSync(driDir)
-      .filter((name) => /^renderD\d+$/.test(name))
-      .sort();
-    if (entries.length > 0) return path.join(driDir, entries[0]);
-  } catch {}
-  return null;
-}
-
-function getGpuEncoders() {
-  const encoders = [
-    {
-      id: 'h264_nvenc:auto',
-      name: 'h264_nvenc',
-      label: 'NVIDIA NVENC',
-      encodeArgs: ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '26', '-b:v', '0'],
-      outputArgs: YUV420_OUTPUT_ARGS,
-    },
-  ];
-
-  if (process.platform === 'win32') {
-    for (let index = 0; index < D3D11_ADAPTER_SCAN_LIMIT; index++) {
-      encoders.push({
-        id: `h264_amf:d3d11:${index}`,
-        name: 'h264_amf',
-        label: `AMD AMF adapter ${index}`,
-        inputArgs: ['-init_hw_device', `d3d11va=stashhw:${index}`, '-filter_hw_device', 'stashhw'],
-        previewFilter: `${DEFAULT_PREVIEW_FILTER},format=nv12,hwupload`,
-        encodeArgs: ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '26', '-qp_p', '26'],
-        outputArgs: [],
-        captureDeviceName: true,
-      });
-    }
-  }
-
-  encoders.push({
-    id: 'h264_amf:auto',
-    name: 'h264_amf',
-    label: 'AMD AMF auto',
-    encodeArgs: ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '26', '-qp_p', '26'],
-    outputArgs: YUV420_OUTPUT_ARGS,
-  });
-
-  encoders.push({
-    id: 'h264_qsv:auto',
-    name: 'h264_qsv',
-    label: 'Intel QSV',
-    encodeArgs: ['-c:v', 'h264_qsv', '-preset', 'fast', '-global_quality', '26'],
-    outputArgs: YUV420_OUTPUT_ARGS,
-  });
-
-  const vaapiDevice = findVaapiDevice();
-  if (vaapiDevice) {
-    encoders.push({
-      id: `h264_vaapi:${vaapiDevice}`,
-      name: 'h264_vaapi',
-      label: `VAAPI ${vaapiDevice}`,
-      inputArgs: ['-vaapi_device', vaapiDevice],
-      previewFilter: `${DEFAULT_PREVIEW_FILTER},format=nv12,hwupload`,
-      encodeArgs: ['-c:v', 'h264_vaapi', '-qp', '26'],
-      outputArgs: [],
-    });
-  }
-
-  return encoders;
-}
-
-const SOFTWARE_ENCODE_ARGS = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '26'];
-
-let encoderProbe = null;
-let renderMode = 'software';
-let hardwareDevice = AUTO_HARDWARE_DEVICE;
-let hardwareFallbackWarned = false;
-let hardwareDeviceFallbackWarned = false;
-
-function normalizeRenderMode(mode) {
-  // Accept old config/API values from versions that used cpu/gpu names.
-  return (mode === 'hardware' || mode === 'gpu') ? 'hardware' : 'software';
-}
-
-function normalizeHardwareDevice(device) {
-  const value = typeof device === 'string' ? device.trim() : '';
-  return value || AUTO_HARDWARE_DEVICE;
-}
-
-function getEncoderLabel(encoder) {
-  return encoder.deviceLabel ? `${encoder.label} - ${encoder.deviceLabel}` : encoder.label;
-}
-
-// `ffmpeg -encoders` only reports what the binary was compiled with. Most
-// Windows ffmpeg builds ship nvenc/amf/qsv all enabled, so the listing is
-// useless for picking what actually works on the host hardware. We run a tiny
-// test encode against a synthetic source instead.
-function testEncoder(encoder) {
-  return new Promise((resolve) => {
-    // 320x240 stays above AMF's
-    // minimum frame size — AMF rejects tiny frames with a generic init error
-    // which would false-negative on AMD hardware.
-    const args = [
-      '-hide_banner', '-loglevel', encoder.captureDeviceName ? 'verbose' : 'error',
-      ...(encoder.inputArgs || []),
-      '-f', 'lavfi', '-i', 'color=black:s=320x240:r=25',
-      '-frames:v', '1',
-    ];
-    if (encoder.previewFilter) args.push('-vf', encoder.previewFilter);
-    args.push(
-      ...encoder.encodeArgs,
-      ...(encoder.outputArgs || []),
-      '-f', 'null', '-',
-    );
-    execFile('ffmpeg', args, { timeout: 10000 }, (err, _stdout, stderr) => {
-      const output = stderr || '';
-      const deviceMatch = output.match(/Using device\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s+\(([^)]+)\)/);
-      if (deviceMatch) encoder.deviceLabel = `${deviceMatch[2]} (${deviceMatch[1]})`;
-      if (encoder.captureDeviceName && !deviceMatch) {
-        return resolve({ ok: false, reason: 'adapter not found' });
-      }
-      if (!err) return resolve({ ok: true });
-      const firstLine = (output || err.message || '')
-        .split('\n').map((l) => l.trim()).filter(Boolean)[0] || 'failed';
-      const reason = firstLine.replace(/^\[[^\]]+\]\s*/, '').slice(0, 140);
-      resolve({ ok: false, reason });
-    });
-  });
-}
-
-async function probeEncoders() {
-  if (encoderProbe) return encoderProbe;
-  if (!await checkFfmpeg()) {
-    encoderProbe = { available: [], best: null };
-    return encoderProbe;
-  }
-
-  // Cheap first pass: which encoder modules does this ffmpeg build ship at all?
-  const listStdout = await new Promise((resolve) => {
-    execFile('ffmpeg', ['-hide_banner', '-encoders'], { timeout: 5000 },
-      (err, out) => resolve(err ? '' : out));
-  });
-  const candidates = getGpuEncoders().filter((e) =>
-    new RegExp('\\s' + e.name + '\\s', 'i').test(listStdout));
-
-  // Expensive second pass: actually try each. Serial so concurrent hardware inits
-  // don't step on each other.
-  const available = [];
-  for (let i = 0; i < candidates.length; i++) {
-    const enc = candidates[i];
-    const result = await testEncoder(enc);
-    if (result.ok) {
-      available.push(enc);
-      term.logInfo('render', `${term.badge('HW', 'success')} ${getEncoderLabel(enc)} (${enc.name}) available`);
-    } else {
-      term.logInfo('render', `${term.badge('SKIP', 'muted')} ${getEncoderLabel(enc)} (${enc.name}) ${result.reason}`);
-      if (enc.id && enc.id.startsWith('h264_amf:d3d11:') && result.reason === 'adapter not found') {
-        while (candidates[i + 1] && candidates[i + 1].id && candidates[i + 1].id.startsWith('h264_amf:d3d11:')) i++;
-      }
-    }
-  }
-
-  const best = available[0] || null;
-  encoderProbe = { available, best };
-  if (best) term.logSuccess('render', `${term.badge('HW', 'success')} selected ${getEncoderLabel(best)} (${best.name})`);
-  else term.logInfo('render', `${term.badge('SW', 'muted')} no hardware encoder available - software only`);
-  return encoderProbe;
-}
-
-function setRenderMode(mode, device) {
-  renderMode = normalizeRenderMode(mode);
-  if (device !== undefined) hardwareDevice = normalizeHardwareDevice(device);
-  hardwareFallbackWarned = false;
-  hardwareDeviceFallbackWarned = false;
-  renderFailures.clear();
-}
-
-function getRenderMode() { return renderMode; }
-function getHardwareDevice() { return hardwareDevice; }
-function getRenderCapabilities() { return probeEncoders(); }
-
-async function pickVideoEncodeArgs() {
-  if (renderMode !== 'hardware') {
-    return {
-      inputArgs: [],
-      filter: DEFAULT_PREVIEW_FILTER,
-      args: SOFTWARE_ENCODE_ARGS,
-      outputArgs: YUV420_OUTPUT_ARGS,
-      encoder: 'libx264',
-      hardware: false,
-    };
-  }
-  const probe = await probeEncoders();
-  const preferred = hardwareDevice === AUTO_HARDWARE_DEVICE
-    ? null
-    : probe.available.find((enc) => enc.id === hardwareDevice);
-  const chosen = preferred || probe.best;
-  if (hardwareDevice !== AUTO_HARDWARE_DEVICE && !preferred && !hardwareDeviceFallbackWarned) {
-    term.logWarn('render', `selected hardware device unavailable (${hardwareDevice}) - using auto`);
-    hardwareDeviceFallbackWarned = true;
-  }
-
-  if (!chosen) {
-    if (!hardwareFallbackWarned) {
-      term.logWarn('render', 'hardware mode selected but no hardware encoder available - using software');
-      hardwareFallbackWarned = true;
-    }
-    return {
-      inputArgs: [],
-      filter: DEFAULT_PREVIEW_FILTER,
-      args: SOFTWARE_ENCODE_ARGS,
-      outputArgs: YUV420_OUTPUT_ARGS,
-      encoder: 'libx264',
-      hardware: false,
-    };
-  }
-  return {
-    inputArgs: chosen.inputArgs || [],
-    filter: chosen.previewFilter || DEFAULT_PREVIEW_FILTER,
-    args: chosen.encodeArgs,
-    outputArgs: chosen.outputArgs || [],
-    encoder: chosen.name,
-    target: getEncoderLabel(chosen),
-    hardware: true,
-  };
-}
 
 // ── Path helpers ───────────────────────────────────────────────────────
 
@@ -297,35 +42,29 @@ function getSafeRelPath(relPath) {
 }
 
 function thumbAbsPath(relPath) {
-  const safeRel = getSafeRelPath(relPath);
-  const parsed = path.parse(safeRel.replace(/\\/g, '/'));
+  const parsed = path.parse(getSafeRelPath(relPath));
   return path.join(THUMB_DIR, parsed.dir, parsed.name + '.jpg');
 }
 
 function previewAbsPath(relPath) {
-  const safeRel = getSafeRelPath(relPath);
-  const parsed = path.parse(safeRel.replace(/\\/g, '/'));
+  const parsed = path.parse(getSafeRelPath(relPath));
   return path.join(THUMB_DIR, parsed.dir, `${parsed.name}_preview_${PREV_W}.mp4`);
 }
+
+// ── Temp file helpers ──────────────────────────────────────────────────
 
 function tempRenderPath(dest) {
   const parsed = path.parse(dest);
   const ext = parsed.ext || '.tmp';
-  const name = `${parsed.name}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-  return path.join(TMP_DIR, name);
-}
-
-async function validateRenderedFile(filePath) {
-  const stat = await fs.promises.stat(filePath);
-  if (!stat.isFile() || stat.size <= 0) throw new Error('render produced an empty file');
-  return stat;
+  const tag = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return path.join(TMP_DIR, `${parsed.name}-${tag}${ext}`);
 }
 
 async function publishRenderedFile(tmpPath, dest) {
-  await validateRenderedFile(tmpPath);
+  const stat = await fs.promises.stat(tmpPath);
+  if (!stat.isFile() || stat.size <= 0) throw new Error('render produced an empty file');
   await fs.promises.mkdir(path.dirname(dest), { recursive: true });
   await fs.promises.rename(tmpPath, dest);
-  await validateRenderedFile(dest);
 }
 
 async function renderToTempFile(dest, renderFn) {
@@ -358,13 +97,7 @@ async function cleanupStaleTempFiles(maxAgeMs = 60 * 60 * 1000) {
   return removed;
 }
 
-// ── ffmpeg helpers ─────────────────────────────────────────────────────
-
-// Bound to 480x480, preserve aspect, never upscale, force even dimensions
-// (mjpeg encoder requires even dims for yuvj420p output).
-const THUMB_SCALE_FILTER =
-  `scale='min(iw,${THUMB_SIZE})':'min(ih,${THUMB_SIZE})':` +
-  `force_original_aspect_ratio=decrease:force_divisible_by=2`;
+// ── ffmpeg runner ──────────────────────────────────────────────────────
 
 function runFfmpeg(args, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -379,11 +112,179 @@ function runFfmpeg(args, timeoutMs) {
   });
 }
 
-// JPEG XR (.jxr) — emitted by Xbox Game Bar for HDR captures. Standard ffmpeg
-// builds have no jpegxr decoder (only wmv3image, which is a different format),
-// so on Windows we transcode to PNG via WPF's WmpBitmapDecoder first and then
-// hand that to ffmpeg for scaling. Paths are passed through env vars so they
-// can't be interpreted as PowerShell syntax.
+// ── Hardware encoders ──────────────────────────────────────────────────
+// `ffmpeg -encoders` only lists what the binary was compiled with. Most
+// Windows builds ship nvenc/amf/qsv all enabled, so the listing is useless
+// for picking what actually works on the host. We run a tiny synthetic test
+// encode against each candidate.
+
+function findVaapiDevice() {
+  if (process.platform === 'win32') return null;
+  const envDevice = process.env.VAAPI_DEVICE;
+  if (envDevice && fs.existsSync(envDevice)) return envDevice;
+  try {
+    const entries = fs.readdirSync('/dev/dri')
+      .filter((name) => /^renderD\d+$/.test(name))
+      .sort();
+    if (entries.length > 0) return path.join('/dev/dri', entries[0]);
+  } catch {}
+  return null;
+}
+
+function getGpuEncoders() {
+  const encoders = [
+    {
+      id: 'h264_nvenc:auto',
+      name: 'h264_nvenc',
+      label: 'NVIDIA NVENC',
+      encodeArgs: ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '26', '-b:v', '0'],
+      outputArgs: YUV420_OUTPUT_ARGS,
+    },
+    {
+      id: 'h264_amf:auto',
+      name: 'h264_amf',
+      label: 'AMD AMF',
+      encodeArgs: ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '26', '-qp_p', '26'],
+      outputArgs: YUV420_OUTPUT_ARGS,
+    },
+    {
+      id: 'h264_qsv:auto',
+      name: 'h264_qsv',
+      label: 'Intel QSV',
+      encodeArgs: ['-c:v', 'h264_qsv', '-preset', 'fast', '-global_quality', '26'],
+      outputArgs: YUV420_OUTPUT_ARGS,
+    },
+  ];
+
+  const vaapiDevice = findVaapiDevice();
+  if (vaapiDevice) {
+    encoders.push({
+      id: `h264_vaapi:${vaapiDevice}`,
+      name: 'h264_vaapi',
+      label: `VAAPI ${vaapiDevice}`,
+      inputArgs: ['-vaapi_device', vaapiDevice],
+      previewFilter: `${DEFAULT_PREVIEW_FILTER},format=nv12,hwupload`,
+      encodeArgs: ['-c:v', 'h264_vaapi', '-qp', '26'],
+      outputArgs: [],
+    });
+  }
+
+  return encoders;
+}
+
+function testEncoder(encoder) {
+  return new Promise((resolve) => {
+    // 320x240 stays above AMF's minimum frame size; smaller dims false-negative.
+    const args = [
+      '-hide_banner', '-loglevel', 'error',
+      ...(encoder.inputArgs || []),
+      '-f', 'lavfi', '-i', 'color=black:s=320x240:r=25',
+      '-frames:v', '1',
+    ];
+    if (encoder.previewFilter) args.push('-vf', encoder.previewFilter);
+    args.push(...encoder.encodeArgs, ...(encoder.outputArgs || []), '-f', 'null', '-');
+    execFile('ffmpeg', args, { timeout: 10000, maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      if (!err) return resolve({ ok: true });
+      const firstLine = (stderr || err.message || '')
+        .split('\n').map((l) => l.trim()).filter(Boolean)[0] || 'failed';
+      resolve({ ok: false, reason: firstLine.replace(/^\[[^\]]+\]\s*/, '').slice(0, 140) });
+    });
+  });
+}
+
+let encoderProbe = null;
+let renderMode = 'software';
+let hardwareDevice = AUTO_HARDWARE_DEVICE;
+
+async function probeEncoders() {
+  if (encoderProbe) return encoderProbe;
+
+  const listStdout = await new Promise((resolve) => {
+    execFile('ffmpeg', ['-hide_banner', '-encoders'], { timeout: 5000 },
+      (err, out) => resolve(err ? '' : out));
+  });
+  const candidates = getGpuEncoders().filter((e) =>
+    new RegExp('\\s' + e.name + '\\s', 'i').test(listStdout));
+
+  // Serial — concurrent hardware inits step on each other.
+  const available = [];
+  for (const enc of candidates) {
+    const result = await testEncoder(enc);
+    if (result.ok) {
+      available.push(enc);
+      term.logInfo('render', `${term.badge('HW', 'success')} ${enc.label} (${enc.name}) available`);
+    } else {
+      term.logInfo('render', `${term.badge('SKIP', 'muted')} ${enc.label} (${enc.name}) ${result.reason}`);
+    }
+  }
+
+  const best = available[0] || null;
+  encoderProbe = { available, best };
+  if (best) term.logSuccess('render', `${term.badge('HW', 'success')} selected ${best.label} (${best.name})`);
+  else term.logInfo('render', `${term.badge('SW', 'muted')} no hardware encoder available - software only`);
+  return encoderProbe;
+}
+
+function setRenderMode(mode, device) {
+  renderMode = (mode === 'hardware' || mode === 'gpu') ? 'hardware' : 'software';
+  if (device !== undefined) {
+    const trimmed = typeof device === 'string' ? device.trim() : '';
+    hardwareDevice = trimmed || AUTO_HARDWARE_DEVICE;
+  }
+  encoderProbe = null;
+  hardwareFallbackWarned = false;
+  hardwareDeviceFallbackWarned = false;
+  renderFailures.clear();
+}
+
+let hardwareFallbackWarned = false;
+let hardwareDeviceFallbackWarned = false;
+
+function getHardwareDevice() { return hardwareDevice; }
+function getRenderCapabilities() { return probeEncoders(); }
+
+async function pickVideoEncodeArgs() {
+  const softwareChoice = {
+    inputArgs: [],
+    filter: DEFAULT_PREVIEW_FILTER,
+    args: SOFTWARE_ENCODE_ARGS,
+    outputArgs: YUV420_OUTPUT_ARGS,
+    encoder: 'libx264',
+    hardware: false,
+  };
+  if (renderMode !== 'hardware') return softwareChoice;
+
+  const probe = await probeEncoders();
+  const explicit = hardwareDevice !== AUTO_HARDWARE_DEVICE
+    ? probe.available.find((enc) => enc.id === hardwareDevice)
+    : null;
+  if (hardwareDevice !== AUTO_HARDWARE_DEVICE && !explicit && !hardwareDeviceFallbackWarned) {
+    term.logWarn('render', `selected hardware device unavailable (${hardwareDevice}) - using auto`);
+    hardwareDeviceFallbackWarned = true;
+  }
+  const chosen = explicit || probe.best;
+  if (!chosen) {
+    if (!hardwareFallbackWarned) {
+      term.logWarn('render', 'hardware mode selected but no hardware encoder available - using software');
+      hardwareFallbackWarned = true;
+    }
+    return softwareChoice;
+  }
+  return {
+    inputArgs: chosen.inputArgs || [],
+    filter: chosen.previewFilter || DEFAULT_PREVIEW_FILTER,
+    args: chosen.encodeArgs,
+    outputArgs: chosen.outputArgs || [],
+    encoder: chosen.name,
+    hardware: true,
+  };
+}
+
+// ── Image thumbs (incl. JPEG XR via Windows WIC) ───────────────────────
+// Xbox Game Bar emits .jxr for HDR captures. Stock ffmpeg has no jpegxr
+// decoder, so on Windows we transcode to PNG via WPF's WmpBitmapDecoder first.
+// Paths are passed through env vars to avoid PowerShell quoting issues.
+
 const JXR_PS_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationCore
@@ -422,16 +323,14 @@ function convertJxrToPng(src, tmpPng) {
 async function makeImageThumb(src, dest) {
   await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 
-  const ext = path.extname(src).toLowerCase();
   let effectiveSrc = src;
   let tmpToCleanup = null;
-  if (ext === '.jxr') {
+  if (path.extname(src).toLowerCase() === '.jxr') {
     if (process.platform !== 'win32') {
       throw new Error('.jxr decoding requires Windows (WIC JPEG XR codec)');
     }
     await fs.promises.mkdir(TMP_DIR, { recursive: true });
-    tmpToCleanup = path.join(
-      TMP_DIR,
+    tmpToCleanup = path.join(TMP_DIR,
       `jxr-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
     await convertJxrToPng(src, tmpToCleanup);
     effectiveSrc = tmpToCleanup;
@@ -448,11 +347,11 @@ async function makeImageThumb(src, dest) {
       '-y', dest,
     ], 30000);
   } finally {
-    if (tmpToCleanup) {
-      fs.promises.unlink(tmpToCleanup).catch(() => {});
-    }
+    if (tmpToCleanup) fs.promises.unlink(tmpToCleanup).catch(() => {});
   }
 }
+
+// ── Video thumb + preview ──────────────────────────────────────────────
 
 function runVideoThumbFfmpeg(src, dest, seekSeconds) {
   const args = ['-hide_banner', '-loglevel', 'error'];
@@ -470,197 +369,68 @@ function runVideoThumbFfmpeg(src, dest, seekSeconds) {
 async function makeVideoThumb(src, dest) {
   await fs.promises.mkdir(path.dirname(dest), { recursive: true });
   // Frames near t=0 can be black or a title card; try t=1s first.
-  try {
-    await runVideoThumbFfmpeg(src, dest, 1);
-  } catch {
-    await runVideoThumbFfmpeg(src, dest, 0);
-  }
+  try { await runVideoThumbFfmpeg(src, dest, 1); }
+  catch { await runVideoThumbFfmpeg(src, dest, 0); }
 }
 
-// ── 2-second preview clip with progress bar ────────────────────────────
-
-function runVideoPreviewFfmpeg(relPath, src, dest, encoderOptions, progressTag, animateProgress = true) {
-  return new Promise((resolve, reject) => {
-    const encodeArgs = encoderOptions.args;
-    const encoderName = encoderOptions.encoder;
-    const label = term.shortPath(relPath, 44).padEnd(44);
-    const barWidth = 20;
-    const durationUs = 2_000_000;
-    const canAnimateProgress = animateProgress && term.isInteractive();
-    const encoderTag = encoderName === 'libx264' ? 'SW' : 'HW';
-    const encoderTone = encoderTag === 'SW' ? 'muted' : 'accent';
-    const countTag = progressTag ? term.badge(progressTag, 'muted') : '';
-
-    function buildProgressLine(pct, extra, tone) {
-      const done = tone === 'success';
-      const parts = ['  ' + term.formatLabel('render', done ? 'success' : 'accent')];
-      if (countTag) parts.push(countTag);
-      parts.push(
-        term.badge(encoderTag, done ? 'success' : encoderTone),
-        term.muted(label),
-        term.progressBar(pct, barWidth, done ? 'success' : 'accent'),
-        term.muted(String(pct).padStart(3) + '%'),
-      );
-      if (extra) parts.push(term.muted(extra || ''));
-      return parts.join(' ');
-    }
-
-    function drawBar(pct) {
-      if (!canAnimateProgress) return;
-      term.write('\r' + buildProgressLine(pct), 'stdout');
-    }
-
-    const countPrefix = progressTag ? `[${progressTag}] ` : '';
-    if (canAnimateProgress) drawBar(0);
-    else term.logInfo('render', `${countPrefix}${term.badge(encoderTag, encoderTone)} ${term.shortPath(relPath)} ${term.muted(encoderName)}`);
-
-    const args = [
-      '-hide_banner',
-      '-loglevel', 'error',
-      ...(encoderOptions.inputArgs || []),
-      '-i', src,
-      '-t', '2',
-      '-vf', encoderOptions.filter || DEFAULT_PREVIEW_FILTER,
-      ...encodeArgs,
-      ...(encoderOptions.outputArgs || []),
-      '-an',
-      '-movflags', '+faststart',
-      '-progress', 'pipe:1',
-      '-y', dest,
-    ];
-
-    const child = spawn('ffmpeg', args);
-
-    let stderrBuf = '';
-    child.stderr.on('data', (data) => { stderrBuf += data.toString(); });
-
-    child.stdout.on('data', (data) => {
-      const match = data.toString().match(/out_time_us=(\d+)/);
-      if (!match) return;
-      const pct = Math.min(100, Math.round(parseInt(match[1], 10) / durationUs * 100));
-      drawBar(pct);
-    });
-
-    child.on('error', (err) => {
-      if (canAnimateProgress) term.write('\n', 'stdout');
-      reject(err);
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        let sizeStr = '?';
-        try {
-          const bytes = fs.statSync(dest).size;
-          sizeStr = bytes < 1024 * 1024
-            ? (bytes / 1024).toFixed(0) + ' KB'
-            : (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-        } catch {}
-        if (canAnimateProgress) {
-          term.write('\r' + buildProgressLine(100, '- ' + sizeStr, 'success') + '\n', 'stdout');
-        } else {
-          term.logSuccess('render', `${countPrefix}${term.badge(encoderTag, 'success')} ${term.shortPath(relPath)} ${term.muted(sizeStr)}`);
-        }
-        resolve();
-      } else {
-        if (canAnimateProgress) term.write('\n', 'stdout');
-        const tail = stderrBuf.trim().split('\n').slice(-3).join(' | ');
-        reject(new Error(tail.slice(0, 300) || `ffmpeg exited with code ${code}`));
-      }
-    });
-  });
+function buildPreviewArgs(src, dest, choice) {
+  return [
+    '-hide_banner', '-loglevel', 'error',
+    ...choice.inputArgs,
+    '-i', src,
+    '-t', '2',
+    '-vf', choice.filter,
+    ...choice.args,
+    ...choice.outputArgs,
+    '-an',
+    '-movflags', '+faststart',
+    '-y', dest,
+  ];
 }
 
-async function makeVideoPreview(relPath, src, dest, progressTag, animateProgress = true) {
+const SOFTWARE_PREVIEW_CHOICE = {
+  inputArgs: [],
+  filter: DEFAULT_PREVIEW_FILTER,
+  args: SOFTWARE_ENCODE_ARGS,
+  outputArgs: YUV420_OUTPUT_ARGS,
+  encoder: 'libx264',
+  hardware: false,
+};
+
+async function makeVideoPreview(src, dest) {
   await fs.promises.mkdir(path.dirname(dest), { recursive: true });
   const chosen = await pickVideoEncodeArgs();
   try {
-    await runVideoPreviewFfmpeg(relPath, src, dest, chosen, progressTag, animateProgress);
+    await runFfmpeg(buildPreviewArgs(src, dest, chosen), 60000);
+    return chosen;
   } catch (err) {
-    // If hardware encode fails mid-stream (stale drivers, locked session),
-    // retry once in software so the user still gets a preview.
-    if (chosen.hardware) {
-      term.logWarn('render', `${chosen.encoder} failed (${err.message}) - retrying in software`);
-      await runVideoPreviewFfmpeg(relPath, src, dest, {
-        inputArgs: [],
-        filter: DEFAULT_PREVIEW_FILTER,
-        args: SOFTWARE_ENCODE_ARGS,
-        outputArgs: YUV420_OUTPUT_ARGS,
-        encoder: 'libx264',
-      }, progressTag, animateProgress);
-    } else {
-      throw err;
-    }
+    if (!chosen.hardware) throw err;
+    // Transient hardware-encoder failure (e.g. NVENC session-limit while a game
+    // is recording). Retry once in software so we don't lock this file out of
+    // preview generation via the render-failure backoff.
+    term.logWarn('render', `${chosen.encoder} failed (${err.message}) - retrying in software`);
+    await runFfmpeg(buildPreviewArgs(src, dest, SOFTWARE_PREVIEW_CHOICE), 60000);
+    return SOFTWARE_PREVIEW_CHOICE;
   }
 }
 
-// ── Public API ─────────────────────────────────────────────────────────
+// ── Render-failure backoff ─────────────────────────────────────────────
 
-async function ensureThumb(relPath, fullSrcPath, isVideo, progressTag) {
-  const dest = thumbAbsPath(relPath);
-  if (fs.existsSync(dest)) return dest;
-
-  if (pending.has(relPath)) {
-    try { await pending.get(relPath); } catch {}
-    if (fs.existsSync(dest)) return dest;
-    throw new Error('thumbnail generation failed');
-  }
-
-  if (!await checkFfmpeg()) throw new Error('ffmpeg not available');
-
-  const prefix = progressTag ? `[${progressTag}] ` : '';
-  term.logInfo('render', `${prefix}${term.badge(isVideo ? 'VTHUMB' : 'THUMB', 'muted')} ${term.shortPath(relPath)}`);
-  const work = renderToTempFile(dest, (tmpDest) =>
-    isVideo ? makeVideoThumb(fullSrcPath, tmpDest) : makeImageThumb(fullSrcPath, tmpDest))
-    .finally(() => pending.delete(relPath));
-  pending.set(relPath, work);
-  await work;
-  return dest;
-}
-
-async function ensurePreview(relPath, fullSrcPath, progressTag, animateProgress = true) {
-  const dest = previewAbsPath(relPath);
-  if (fs.existsSync(dest)) return dest;
-
-  const key = 'preview:' + relPath;
-  if (pending.has(key)) {
-    try { await pending.get(key); } catch {}
-    if (fs.existsSync(dest)) return dest;
-    throw new Error('preview generation failed');
-  }
-
-  if (!await checkFfmpeg()) throw new Error('ffmpeg not available');
-
-  const work = renderToTempFile(dest, (tmpDest) =>
-    makeVideoPreview(relPath, fullSrcPath, tmpDest, progressTag, animateProgress))
-    .finally(() => pending.delete(key));
-  pending.set(key, work);
-  await work;
-  return dest;
-}
-
-function failureKey(file) {
-  return file && file.path ? file.path : '';
-}
+const renderFailures = new Map();
 
 function getBackoffFailure(file, now = Date.now()) {
-  const key = failureKey(file);
-  const record = key ? renderFailures.get(key) : null;
+  const record = file && file.path ? renderFailures.get(file.path) : null;
   if (!record) return null;
-  if (record.mtime !== file.mtime) {
-    renderFailures.delete(key);
-    return null;
-  }
-  if ((now - record.failedAt) >= RENDER_FAILURE_BACKOFF_MS) {
-    renderFailures.delete(key);
+  if (record.mtime !== file.mtime || (now - record.failedAt) >= RENDER_FAILURE_BACKOFF_MS) {
+    renderFailures.delete(file.path);
     return null;
   }
   return record;
 }
 
 function rememberRenderFailure(file, err) {
-  const key = failureKey(file);
-  if (!key) return;
-  renderFailures.set(key, {
+  if (!file || !file.path) return;
+  renderFailures.set(file.path, {
     mtime: file.mtime,
     failedAt: Date.now(),
     message: err && err.message ? err.message : 'render failed',
@@ -668,8 +438,24 @@ function rememberRenderFailure(file, err) {
 }
 
 function forgetRenderFailure(file) {
-  const key = failureKey(file);
-  if (key) renderFailures.delete(key);
+  if (file && file.path) renderFailures.delete(file.path);
+}
+
+// ── Pregenerate ────────────────────────────────────────────────────────
+
+async function ensureThumb(relPath, src, isVideo) {
+  const dest = thumbAbsPath(relPath);
+  if (fs.existsSync(dest)) return;
+  await renderToTempFile(dest, (tmp) =>
+    isVideo ? makeVideoThumb(src, tmp) : makeImageThumb(src, tmp));
+}
+
+async function ensurePreview(relPath, src) {
+  const dest = previewAbsPath(relPath);
+  if (fs.existsSync(dest)) return null;
+  let chosen = null;
+  await renderToTempFile(dest, async (tmp) => { chosen = await makeVideoPreview(src, tmp); });
+  return chosen;
 }
 
 async function buildPregenerateTodo(capturesMap, limit) {
@@ -683,10 +469,8 @@ async function buildPregenerateTodo(capturesMap, limit) {
         forgetRenderFailure(file);
         continue;
       }
-      const backoff = getBackoffFailure(file, now);
-      todo.push({ file, needThumb, needPreview, backoff });
+      todo.push({ file, needThumb, needPreview, backoff: getBackoffFailure(file, now) });
     }
-    // Yield to the event loop between game directories.
     await new Promise((r) => setImmediate(r));
   }
   todo.sort((a, b) => (b.file.mtime || 0) - (a.file.mtime || 0));
@@ -717,19 +501,29 @@ async function runPregeneratePass(capturesMap, sanitizeFn, limit) {
       term.logWarn('render', `[${tag}] backoff ${term.shortPath(file.path)}: ${backoff.message}`);
       return;
     }
-
     const src = sanitizeFn(file.path);
     if (!src) {
       skipped++;
       term.logWarn('render', `[${tag}] skipped ${term.shortPath(file.path)}`);
       return;
     }
-
     try {
-      if (needThumb) await ensureThumb(file.path, src, file.type === 'video', tag);
-      if (needPreview) await ensurePreview(file.path, src, tag, false);
+      const isVideo = file.type === 'video';
+      const start = Date.now();
+      if (needThumb) await ensureThumb(file.path, src, isVideo);
+      let encTag = isVideo ? 'PREV' : 'IMG';
+      let encTone = 'muted';
+      if (needPreview) {
+        const chosen = await ensurePreview(file.path, src);
+        if (chosen) {
+          encTag = chosen.hardware ? 'HW' : 'SW';
+          encTone = chosen.hardware ? 'accent' : 'muted';
+        }
+      }
       forgetRenderFailure(file);
       done++;
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      term.logInfo('render', `[${tag}] ${term.badge(encTag, encTone)} ${term.shortPath(file.path)} ${elapsed}s`);
     } catch (err) {
       failed++;
       rememberRenderFailure(file, err);
@@ -741,7 +535,6 @@ async function runPregeneratePass(capturesMap, sanitizeFn, limit) {
     while (nextIndex < todo.length) {
       const index = nextIndex++;
       await runOne(todo[index], index);
-      // Yield between files so request handling stays responsive.
       await new Promise((r) => setImmediate(r));
     }
   }
@@ -756,6 +549,9 @@ async function runPregeneratePass(capturesMap, sanitizeFn, limit) {
   ].filter(Boolean).join(', ');
   term.logSuccess('render', `complete - ${suffix}`);
 }
+
+let pregenerateActive = false;
+let pregenerateQueued = null;
 
 function pregenerate(capturesMap, sanitizeFn, limit = Infinity) {
   if (limit <= 0) return;
@@ -777,18 +573,14 @@ function pregenerate(capturesMap, sanitizeFn, limit = Infinity) {
       }
     } finally {
       pregenerateActive = false;
-      if (pregenerateQueued) {
-        const queued = pregenerateQueued;
-        pregenerateQueued = null;
-        pregenerate(queued.capturesMap, queued.sanitizeFn, queued.limit);
-      }
     }
   });
 }
 
-// Delete all cached video preview files so a mode switch is
-// actually observable — otherwise the library is already fully encoded and
-// the new encoder is never exercised.
+// ── Extras ─────────────────────────────────────────────────────────────
+
+// Delete cached previews so a mode switch is observable — otherwise the
+// library is already encoded and the new encoder is never exercised.
 async function clearVideoPreviews() {
   let removed = 0;
   async function walk(dir) {
@@ -807,8 +599,7 @@ async function clearVideoPreviews() {
   return removed;
 }
 
-async function getImageMeta(src) {
-  if (!await checkFfprobe()) return null;
+function getImageMeta(src) {
   return new Promise((resolve) => {
     execFile('ffprobe', [
       '-v', 'error',
@@ -821,8 +612,7 @@ async function getImageMeta(src) {
       try {
         const data = JSON.parse(stdout);
         const s = data && Array.isArray(data.streams) ? data.streams[0] : null;
-        if (s && s.width && s.height) resolve({ width: s.width, height: s.height });
-        else resolve(null);
+        resolve(s && s.width && s.height ? { width: s.width, height: s.height } : null);
       } catch { resolve(null); }
     });
   });
@@ -831,13 +621,10 @@ async function getImageMeta(src) {
 module.exports = {
   thumbAbsPath,
   previewAbsPath,
-  ensureThumb,
-  ensurePreview,
-  pregenerate,
-  getImageMeta,
   setRenderMode,
-  getRenderMode,
   getHardwareDevice,
   getRenderCapabilities,
+  pregenerate,
   clearVideoPreviews,
+  getImageMeta,
 };

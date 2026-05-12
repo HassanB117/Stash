@@ -1,13 +1,15 @@
 (function () {
   var account = {};
   var folder = '';
-  var MIN_PASSWORD_LENGTH = 12;
+  var MIN_PASSWORD_LENGTH = 8;
 
   function goTo(n) {
     document.querySelectorAll('.step-panel').forEach(function (p) { p.classList.remove('active'); });
     document.querySelectorAll('.step').forEach(function (s) {
       s.classList.toggle('active', +s.dataset.step <= n);
       s.classList.toggle('current', +s.dataset.step === n);
+      if (+s.dataset.step === n) s.setAttribute('aria-current', 'step');
+      else s.removeAttribute('aria-current');
     });
     document.getElementById('panel-' + n).classList.add('active');
   }

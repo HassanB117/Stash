@@ -8,19 +8,19 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Rajdhani:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=ui-grid-fix-20260513">
 </head>
-<body class="centered">
+<body class="centered auth-page">
 
-  <div style="text-align:center;margin-bottom:28px;">
-    <div style="font-family:var(--display);font-size:32px;font-weight:700;letter-spacing:6px;color:var(--accent);text-shadow:0 0 20px rgba(0,212,255,0.4);">STASH</div>
-    <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-top:4px;">INITIAL CONFIGURATION</div>
+  <div class="brand-block">
+    <div class="brand-title">STASH</div>
+    <div class="brand-subtitle">INITIAL CONFIGURATION</div>
   </div>
 
-  <div class="wizard">
+  <div class="wizard" aria-label="Initial configuration wizard">
 
     <div class="steps">
-      <div class="step active current" data-step="1">01 · ACCOUNT</div>
+      <div class="step active current" data-step="1" aria-current="step">01 · ACCOUNT</div>
       <div class="step" data-step="2">02 · FOLDER</div>
       <div class="step" data-step="3">03 · RENDER</div>
       <div class="step" data-step="4">04 · DONE</div>
@@ -28,14 +28,14 @@
 
     <!-- Step 1: Account -->
     <div class="step-panel active" id="panel-1">
-      <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-bottom:4px;">// CREATE ACCOUNT</div>
+      <div class="form-kicker">// CREATE ACCOUNT</div>
       <div class="field">
         <label for="username">username</label>
         <input type="text" id="username" autocomplete="username" placeholder="e.g. player_one">
       </div>
       <div class="field">
         <label for="password">password</label>
-        <input type="password" id="password" autocomplete="new-password" placeholder="at least 12 characters">
+        <input type="password" id="password" autocomplete="new-password" placeholder="at least 8 characters">
       </div>
       <div class="field">
         <label for="passwordConfirm">confirm password</label>
@@ -46,20 +46,20 @@
         <input type="password" id="setupToken" autocomplete="off" placeholder="from the server log">
         <div class="hint">required unless REQUIRE_SETUP_TOKEN=false.</div>
       </div>
-      <div class="error" id="error-1"></div>
+      <div class="error" id="error-1" aria-live="polite"></div>
       <button type="button" class="primary" id="next-1">NEXT →</button>
     </div>
 
     <!-- Step 2: Folder -->
     <div class="step-panel" id="panel-2">
-      <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-bottom:4px;">// SET CAPTURE PATH</div>
+      <div class="form-kicker">// SET CAPTURE PATH</div>
       <div class="field">
         <label for="folderPath">captures folder path</label>
         <input type="text" id="folderPath" placeholder="C:\Users\YourName\Videos\Captures" spellcheck="false" autocomplete="off">
         <div class="hint">paste the full path to your captures folder.<br>each subfolder = one game in your archive.</div>
       </div>
-      <div class="folder-status" id="folderStatus"></div>
-      <div class="error" id="error-2"></div>
+      <div class="folder-status" id="folderStatus" aria-live="polite"></div>
+      <div class="error" id="error-2" aria-live="polite"></div>
       <div class="actions">
         <button type="button" class="ghost" id="back-2">← BACK</button>
         <button type="button" class="primary" id="next-2">NEXT →</button>
@@ -68,7 +68,7 @@
 
     <!-- Step 3: Render mode -->
     <div class="step-panel" id="panel-3">
-      <div style="font-size:9px;color:var(--text-dim);letter-spacing:3px;margin-bottom:4px;">// PICK RENDER ENGINE</div>
+      <div class="form-kicker">// PICK RENDER ENGINE</div>
       <div class="field">
         <label>thumbnail & preview rendering</label>
         <div class="render-mode-options">
@@ -89,7 +89,7 @@
         </div>
         <div class="hint">you can change this later from settings.</div>
       </div>
-      <div class="error" id="error-3"></div>
+      <div class="error" id="error-3" aria-live="polite"></div>
       <div class="actions">
         <button type="button" class="ghost" id="back-3">← BACK</button>
         <button type="button" class="primary" id="next-3">INITIALIZE →</button>

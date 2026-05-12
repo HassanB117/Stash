@@ -19,16 +19,6 @@ document.getElementById('loginForm').addEventListener('submit', async function (
   }
 });
 
-var setupLink = document.getElementById('setupLink');
-if (setupLink) {
-  setupLink.addEventListener('mouseenter', function () {
-    setupLink.style.color = 'var(--accent)';
-  });
-  setupLink.addEventListener('mouseleave', function () {
-    setupLink.style.color = 'var(--text-dim)';
-  });
-}
-
 function updateTime() {
   var el = document.getElementById('sysTime');
   if (el) el.textContent = 'SYSTEM ONLINE · ' + new Date().toUTCString().slice(0, 16).toUpperCase();

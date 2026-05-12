@@ -14,6 +14,7 @@ const app = express();
 app.disable('x-powered-by');
 const PORT = process.env.PORT || 7117;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const APP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
 
 function readPositiveIntEnv(name, fallback) {
   const raw = process.env[name];
@@ -30,13 +31,33 @@ function readBooleanEnv(name, fallback = false) {
   return fallback;
 }
 
+// Synchronous, uncached read of data/config.json. Used by startup helpers
+// that need config values before loadConfig() is defined further down.
+function readConfigFromDisk() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'config.json'), 'utf8')); }
+  catch { return null; }
+}
+
+function envIsSet(name) {
+  const raw = process.env[name];
+  return raw !== undefined && raw !== '';
+}
+
 function readSessionCookieSecure() {
   const raw = process.env.SESSION_COOKIE_SECURE;
-  if (raw === undefined || raw === '') return process.env.NODE_ENV === 'production';
-  const lower = String(raw).trim().toLowerCase();
-  if (lower === 'auto') return 'auto';
-  if (['1', 'true', 'on', 'yes'].includes(lower)) return true;
-  if (['0', 'false', 'off', 'no'].includes(lower)) return false;
+  if (raw !== undefined && raw !== '') {
+    const lower = String(raw).trim().toLowerCase();
+    if (lower === 'auto') return 'auto';
+    if (['1', 'true', 'on', 'yes'].includes(lower)) return true;
+    if (['0', 'false', 'off', 'no'].includes(lower)) return false;
+    return process.env.NODE_ENV === 'production';
+  }
+  const cfg = readConfigFromDisk();
+  if (cfg && cfg.cookieSecure !== undefined) {
+    if (cfg.cookieSecure === 'auto') return 'auto';
+    if (cfg.cookieSecure === true) return true;
+    if (cfg.cookieSecure === false) return false;
+  }
   return process.env.NODE_ENV === 'production';
 }
 
@@ -88,17 +109,25 @@ function publicHardwareTarget(target) {
 
 function getTrustProxySetting() {
   const raw = process.env.TRUST_PROXY;
-  if (raw === undefined || raw === '') return false;
-  const lower = String(raw).trim().toLowerCase();
-  if (['false', '0', 'off', 'no'].includes(lower)) return false;
-  if (['true', 'on', 'yes'].includes(lower)) return true;
-  if (['loopback', 'linklocal', 'uniquelocal'].includes(lower)) return lower;
-  if (String(raw).includes(',')) {
-    const values = String(raw).split(',').map(v => v.trim()).filter(Boolean);
-    if (values.length > 0) return values;
+  if (raw !== undefined && raw !== '') {
+    const lower = String(raw).trim().toLowerCase();
+    if (['false', '0', 'off', 'no'].includes(lower)) return false;
+    if (['true', 'on', 'yes'].includes(lower)) return true;
+    if (['loopback', 'linklocal', 'uniquelocal'].includes(lower)) return lower;
+    if (String(raw).includes(',')) {
+      const values = String(raw).split(',').map(v => v.trim()).filter(Boolean);
+      if (values.length > 0) return values;
+    }
+    const num = Number(raw);
+    if (Number.isFinite(num)) return num;
+    return false;
   }
-  const num = Number(raw);
-  return Number.isFinite(num) ? num : false;
+  const cfg = readConfigFromDisk();
+  if (cfg && cfg.trustProxy !== undefined) {
+    if (cfg.trustProxy === true || cfg.trustProxy === false) return cfg.trustProxy;
+    if (Number.isInteger(cfg.trustProxy) && cfg.trustProxy >= 0) return cfg.trustProxy;
+  }
+  return false;
 }
 const TRUST_PROXY_SETTING = getTrustProxySetting();
 app.set('trust proxy', TRUST_PROXY_SETTING);
@@ -113,7 +142,7 @@ const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov']);
 const SHARE_TOKEN_RE = /^[a-f0-9]{64}$/i;
 const MAX_REL_PATH_LENGTH = readPositiveIntEnv('MAX_REL_PATH_LENGTH', 4096);
-const MIN_PASSWORD_LENGTH = readPositiveIntEnv('MIN_PASSWORD_LENGTH', 12);
+const MIN_PASSWORD_LENGTH = readPositiveIntEnv('MIN_PASSWORD_LENGTH', 8);
 const MAX_PASSWORD_LENGTH = readPositiveIntEnv('MAX_PASSWORD_LENGTH', 1024);
 const SESSION_MAX_AGE = readPositiveIntEnv('SESSION_MAX_AGE', 7 * 24 * 60 * 60 * 1000);
 const REQUIRE_SETUP_TOKEN = readBooleanEnv('REQUIRE_SETUP_TOKEN', true);
@@ -714,6 +743,10 @@ app.get('/api/csrf', csrfLimiter, (req, res) => {
   res.json({ csrfToken: ensureSessionCsrfToken(req) });
 });
 
+app.get('/api/version', csrfLimiter, (req, res) => {
+  res.json({ version: APP_VERSION });
+});
+
 const SCAN_GAME_CONCURRENCY = 8;
 
 async function scanCapturesFromDir(capturesDir) {
@@ -981,12 +1014,18 @@ app.get('/api/captures/version', requireAuth, async (req, res) => {
 
 app.get('/api/config', requireAuth, (req, res) => {
   const cfg = loadConfig();
+  const trustProxySaved = cfg && cfg.trustProxy !== undefined ? cfg.trustProxy : false;
+  const cookieSecureSaved = cfg && cfg.cookieSecure !== undefined ? cfg.cookieSecure : 'auto';
   res.json({
     username: cfg.username,
     capturesPath: cfg.capturesPath,
     siteUrl: cfg.siteUrl || '',
     renderMode: normalizeRenderMode(cfg.renderMode),
     hardwareDevice: normalizeHardwareDevice(cfg.hardwareDevice),
+    trustProxy: trustProxySaved,
+    cookieSecure: cookieSecureSaved,
+    trustProxyManagedByEnv: envIsSet('TRUST_PROXY'),
+    cookieSecureManagedByEnv: envIsSet('SESSION_COOKIE_SECURE'),
   });
 });
 
@@ -1076,6 +1115,41 @@ app.post('/api/config/password', requireAuth, mutationLimiter, requireCsrf, asyn
   cfg.passwordHash = await bcrypt.hash(newPassword, 12);
   saveConfig(cfg);
   res.json({ ok: true });
+});
+
+// Trust proxy + cookie secure live in config.json but env vars override them.
+// Both require a server restart to take effect (cookie.secure is captured by
+// the session middleware at construction; trust proxy is set once on app).
+app.post('/api/config/security', requireAuth, mutationLimiter, requireCsrf, (req, res) => {
+  const { trustProxy, cookieSecure } = req.body || {};
+  const tpEnv = envIsSet('TRUST_PROXY');
+  const csEnv = envIsSet('SESSION_COOKIE_SECURE');
+  let tpVal;
+  let csVal;
+
+  if (trustProxy !== undefined && !tpEnv) {
+    if (trustProxy === true || trustProxy === false) {
+      tpVal = trustProxy;
+    } else if (Number.isInteger(trustProxy) && trustProxy >= 0 && trustProxy <= 9) {
+      tpVal = trustProxy;
+    } else {
+      return res.status(400).json({ error: 'trustProxy must be true, false, or an integer 0–9' });
+    }
+  }
+
+  if (cookieSecure !== undefined && !csEnv) {
+    if (cookieSecure === true || cookieSecure === false || cookieSecure === 'auto') {
+      csVal = cookieSecure;
+    } else {
+      return res.status(400).json({ error: 'cookieSecure must be true, false, or "auto"' });
+    }
+  }
+
+  const cfg = loadConfig() || {};
+  if (tpVal !== undefined) cfg.trustProxy = tpVal;
+  if (csVal !== undefined) cfg.cookieSecure = csVal;
+  saveConfig(cfg);
+  res.json({ ok: true, restartRequired: true });
 });
 
 app.get('/api/favorites', requireAuth, (req, res) => res.json(loadFavorites()));

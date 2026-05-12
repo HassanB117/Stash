@@ -38,6 +38,25 @@
   window.csrfFetch = csrfFetch;
   window.fetch = csrfFetch;
 
+  // Populate any [data-app-version] elements from /api/version so the UI
+  // stays in lockstep with package.json without per-page hardcoded strings.
+  function applyAppVersion() {
+    const slots = document.querySelectorAll('[data-app-version]');
+    if (!slots.length) return;
+    nativeFetch('/api/version', { credentials: 'same-origin' })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!data || !data.version) return;
+        slots.forEach((el) => { el.textContent = 'v' + data.version; });
+      })
+      .catch(() => {});
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', applyAppVersion);
+  } else {
+    applyAppVersion();
+  }
+
   // ── Custom video player ───────────────────────────────────────────────
   window.buildVideoPlayer = function (src) {
     var wrap = document.createElement('div');
@@ -58,6 +77,8 @@
 
     var btnPlay = document.createElement('button');
     btnPlay.className = 'vplayer-btn';
+    btnPlay.type = 'button';
+    btnPlay.setAttribute('aria-label', 'Play video');
     btnPlay.textContent = '▶';
 
     var timeEl = document.createElement('span');
@@ -75,10 +96,14 @@
 
     var btnMute = document.createElement('button');
     btnMute.className = 'vplayer-btn';
+    btnMute.type = 'button';
+    btnMute.setAttribute('aria-label', 'Mute video');
     btnMute.textContent = 'VOL';
 
     var btnFs = document.createElement('button');
     btnFs.className = 'vplayer-btn';
+    btnFs.type = 'button';
+    btnFs.setAttribute('aria-label', 'Enter fullscreen');
     btnFs.textContent = '⛶';
 
     bar.appendChild(btnPlay);
@@ -113,6 +138,7 @@
     function syncState() {
       var playing = !vid.paused && !vid.ended;
       btnPlay.textContent = playing ? '⏸' : '▶';
+      btnPlay.setAttribute('aria-label', playing ? 'Pause video' : 'Play video');
       pulse.querySelector('span').textContent = playing ? '⏸' : '▶';
       wrap.classList.toggle('vp-playing', playing);
       if (!playing) { clearTimeout(hideTimer); wrap.classList.remove('vp-hidden'); }
@@ -165,6 +191,7 @@
       e.stopPropagation();
       vid.muted = !vid.muted;
       btnMute.textContent = vid.muted ? 'MUTE' : 'VOL';
+      btnMute.setAttribute('aria-label', vid.muted ? 'Unmute video' : 'Mute video');
       reveal();
     });
 

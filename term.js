@@ -23,11 +23,6 @@ function supportsColor(streamName = 'stdout') {
   return Boolean(stream && stream.isTTY) && !colorsDisabled();
 }
 
-function isInteractive(streamName = 'stdout') {
-  const stream = resolveStream(streamName);
-  return Boolean(stream && stream.isTTY);
-}
-
 function wrap(text, tones, streamName = 'stdout') {
   if (!supportsColor(streamName)) return text;
   const list = Array.isArray(tones) ? tones : [tones];
@@ -105,17 +100,6 @@ function kv(key, value, valueTone = null, streamName = 'stdout') {
   return `  ${muted(keyText, streamName)} ${valueText}`;
 }
 
-function statusLine(labelText, message, toneName = 'accent', streamName = 'stdout') {
-  return `  ${formatLabel(labelText, toneName, streamName)} ${message}`;
-}
-
-function progressBar(pct, width = 22, toneName = 'accent', streamName = 'stdout') {
-  const cleanPct = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
-  const filled = Math.round(cleanPct / 100 * width);
-  const bar = '#'.repeat(filled) + '-'.repeat(width - filled);
-  return tone(`[${bar}]`, toneName, streamName);
-}
-
 function shortPath(filePath, maxLength = 46) {
   const value = String(filePath || '').replace(/\\/g, '/');
   if (value.length <= maxLength) return value;
@@ -169,27 +153,11 @@ function logError(labelText, message) {
 }
 
 module.exports = {
-  supportsColor,
-  isInteractive,
-  wrap,
-  accent,
-  muted,
-  success,
-  warn,
-  error,
-  tone,
-  formatLabel,
-  formatMessage,
-  write,
   writeLine,
   divider,
-  section,
-  badge,
-  kv,
-  statusLine,
-  progressBar,
-  shortPath,
   banner,
+  badge,
+  shortPath,
   logInfo,
   logSuccess,
   logWarn,

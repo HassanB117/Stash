@@ -9,8 +9,8 @@
 
   function showMessage(text) {
     loading.textContent = '// ' + text;
-    loading.style.display = 'block';
-    card.style.display = 'none';
+    loading.hidden = false;
+    card.hidden = true;
     statusLabel.textContent = 'ERROR';
   }
 
@@ -25,7 +25,7 @@
     const src = '/s/' + token + '/file';
     const expires = new Date(meta.expiresAt);
     const now = new Date();
-    const diffHours = Math.round((expires - now) / (1000 * 60 * 60));
+    const diffHours = Math.max(0, Math.round((expires - now) / (1000 * 60 * 60)));
 
     // Update Meta
     $('filename').textContent = meta.name;
@@ -45,8 +45,8 @@
       mediaWrap.appendChild(img);
     }
 
-    loading.style.display = 'none';
-    card.style.display = 'block';
+    loading.hidden = true;
+    card.hidden = false;
     document.title = 'stash · ' + meta.name;
 
   } catch (err) {
