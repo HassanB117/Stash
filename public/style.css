@@ -404,8 +404,9 @@ button.ghost:hover {
   flex: 1; overflow-y: auto;
   padding: 14px 28px 40px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, 280px);
+  justify-content: start;
+  gap: 12px;
   align-content: start;
 }
 
@@ -423,7 +424,10 @@ button.ghost:hover {
   box-shadow: 0 10px 30px rgba(0,0,0,0.5);
 }
 .game-card-art {
-  height: 90px; position: relative; overflow: hidden;
+  aspect-ratio: 16 / 10 !important;
+  height: auto !important;
+  width: 100%;
+  position: relative; overflow: hidden;
 }
 .game-card-info {
   padding: 10px 12px 11px;
@@ -1027,7 +1031,7 @@ button.ghost:hover {
     padding: 10px 10px calc(56px + env(safe-area-inset-bottom, 0px) + 12px);
   }
   .games-header { padding: 10px 12px 0; }
-  .game-card-art { height: 70px; }
+  .game-card-art { aspect-ratio: 16 / 10; height: auto; }
   .game-card-name { font-size: 11px; }
   .game-card-meta { font-size: 8px; }
 
@@ -1400,7 +1404,7 @@ button.ghost:hover {
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
 }
 .games-grid-wrap {
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, 280px);
 }
 
 .tile,
@@ -1482,7 +1486,7 @@ button.ghost:hover {
   min-height: 0;
 }
 .game-card-art {
-  height: 104px;
+  aspect-ratio: 16 / 10;
   background-color: #090d14;
 }
 .game-card-art::after {
@@ -1869,7 +1873,7 @@ button.ghost:hover {
     padding: 10px 10px calc(62px + env(safe-area-inset-bottom, 0px) + 12px);
   }
   .game-card-art {
-    height: 78px;
+    aspect-ratio: 16 / 10; height: auto;
   }
   .tile-label {
     padding: 22px 7px 7px;
@@ -2065,6 +2069,20 @@ main.grid {
   align-content: start !important;
   align-items: start !important;
   gap: 12px !important;
+}
+
+/* Recent tab: scroll the whole panel so LOAD MORE sits at the end of the page,
+   not pinned to the bottom of the viewport. */
+#panelRecent {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#panelRecent > main.grid {
+  overflow: visible !important;
+  flex: 0 0 auto !important;
+}
+#panelRecent > .recent-footer {
+  padding-top: 18px;
 }
 main.grid > .tile {
   position: relative !important;
