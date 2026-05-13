@@ -9,6 +9,12 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const term = require('./term');
 const { pregenerate, getImageMeta, setRenderMode, getRenderCapabilities, getHardwareDevice, clearVideoPreviews, thumbAbsPath, previewAbsPath } = require('./thumbs');
+const {
+  isPathInside,
+  normalizeSiteUrl: normalizeSiteUrlValue,
+  resolveSafeRelPath,
+  validatePassword: validatePasswordValue,
+} = require('./lib/validation');
 
 const app = express();
 app.disable('x-powered-by');
@@ -71,31 +77,10 @@ function normalizeHardwareDevice(device) {
   return value || 'auto';
 }
 
-function isLocalHostname(hostname) {
-  const lower = String(hostname || '').toLowerCase();
-  return lower === 'localhost' || lower === '::1' || lower.endsWith('.localhost') ||
-    /^127(?:\.\d{1,3}){3}$/.test(lower);
-}
-
 function normalizeSiteUrl(siteUrl) {
-  const trimmed = typeof siteUrl === 'string' ? siteUrl.trim() : '';
-  if (!trimmed) return { ok: true, value: '' };
-  let parsed;
-  try { parsed = new URL(trimmed); } catch { return { ok: false, error: 'invalid URL' }; }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { ok: false, error: 'URL must use http or https' };
-  }
-  if (parsed.username || parsed.password) {
-    return { ok: false, error: 'URL must not include credentials' };
-  }
-  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-    return { ok: false, error: 'URL must be an origin only, like https://stash.example.com' };
-  }
-  if (parsed.protocol !== 'https:' && !isLocalHostname(parsed.hostname) &&
-      !readBooleanEnv('ALLOW_INSECURE_SITE_URL', false)) {
-    return { ok: false, error: 'public site URL must use https' };
-  }
-  return { ok: true, value: parsed.origin };
+  return normalizeSiteUrlValue(siteUrl, {
+    allowInsecurePublicHttp: readBooleanEnv('ALLOW_INSECURE_SITE_URL', false),
+  });
 }
 
 function publicHardwareTarget(target) {
@@ -191,14 +176,10 @@ function safeCompareSecret(supplied, expected) {
 }
 
 function validatePassword(password, label = 'password') {
-  if (typeof password !== 'string') return `${label} is required`;
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return `${label} must be at least ${MIN_PASSWORD_LENGTH} characters`;
-  }
-  if (password.length > MAX_PASSWORD_LENGTH) {
-    return `${label} must be at most ${MAX_PASSWORD_LENGTH} characters`;
-  }
-  return null;
+  return validatePasswordValue(password, label, {
+    minLength: MIN_PASSWORD_LENGTH,
+    maxLength: MAX_PASSWORD_LENGTH,
+  });
 }
 
 class FileSessionStore extends session.Store {
@@ -575,29 +556,11 @@ const publicShareLimiter = rateLimit({
 });
 
 // --- Helpers ---
-function isPathInside(parent, child) {
-  const relative = path.relative(parent, child);
-  return relative === '' || (!!relative && !isTraversalPath(relative) && !path.isAbsolute(relative));
-}
-
-function isTraversalPath(normalizedPath) {
-  return normalizedPath === '..' ||
-    normalizedPath.startsWith(`..${path.sep}`) ||
-    normalizedPath.startsWith('../') ||
-    normalizedPath.startsWith('..\\');
-}
-
 function sanitizeRelPath(relPath, cfg) {
-  if (typeof relPath !== 'string' || relPath.length === 0 || relPath.length > MAX_REL_PATH_LENGTH) return null;
-  if (relPath.includes('\0') || path.isAbsolute(relPath)) return null;
   cfg = cfg || loadConfig();
-  if (!cfg || !cfg.capturesPath) return null;
-  const capturesDir = path.resolve(cfg.capturesPath);
-  const normalized = path.normalize(relPath);
-  if (normalized === '.' || isTraversalPath(normalized) || path.isAbsolute(normalized)) return null;
-  const fullPath = path.resolve(capturesDir, normalized);
-  if (!isPathInside(capturesDir, fullPath)) return null;
-  return fullPath;
+  return resolveSafeRelPath(relPath, cfg && cfg.capturesPath, {
+    maxRelPathLength: MAX_REL_PATH_LENGTH,
+  });
 }
 
 function resolveCaptureFile(relPath, cfg) {
@@ -1334,24 +1297,35 @@ app.use((err, req, res, next) => {
   return res.status(status).type('text/plain').send('internal server error');
 });
 
-app.listen(PORT, () => {
-  printStartupBanner();
+function startServer() {
+  return app.listen(PORT, () => {
+    printStartupBanner();
 
-  if (isConfigured()) {
-    const cfg = loadConfig();
-    setRenderMode(normalizeRenderMode(cfg.renderMode), normalizeHardwareDevice(cfg.hardwareDevice));
-    // Warm the encoder probe so the detection line lands in the startup log.
-    getRenderCapabilities().catch(() => {});
-    if (PREGENERATE_THUMBS) {
-      (async () => {
-        try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath, PREGENERATE_THUMBS_LIMIT); }
-        catch (err) { term.logError('startup', `initial scan failed: ${err.message}`); }
-      })();
-      const pregenerateTimer = setInterval(async () => {
-        try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath, PREGENERATE_THUMBS_LIMIT); }
-        catch (err) { term.logError('pregen', `scan failed: ${err.message}`); }
-      }, 5 * 60 * 1000);
-      pregenerateTimer.unref();
+    if (isConfigured()) {
+      const cfg = loadConfig();
+      setRenderMode(normalizeRenderMode(cfg.renderMode), normalizeHardwareDevice(cfg.hardwareDevice));
+      // Warm the encoder probe so the detection line lands in the startup log.
+      getRenderCapabilities().catch(() => {});
+      if (PREGENERATE_THUMBS) {
+        (async () => {
+          try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath, PREGENERATE_THUMBS_LIMIT); }
+          catch (err) { term.logError('startup', `initial scan failed: ${err.message}`); }
+        })();
+        const pregenerateTimer = setInterval(async () => {
+          try { pregenerate(await getCapturesSnapshot(true), sanitizeRelPath, PREGENERATE_THUMBS_LIMIT); }
+          catch (err) { term.logError('pregen', `scan failed: ${err.message}`); }
+        }, 5 * 60 * 1000);
+        pregenerateTimer.unref();
+      }
     }
-  }
-});
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  app,
+  startServer,
+};

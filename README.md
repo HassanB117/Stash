@@ -213,13 +213,15 @@ npm start
 Useful checks:
 
 ```bash
-node --check server.js
-node --check thumbs.js
+npm run check
+npm test
+npm run verify
 docker build -t stash:local .
 docker compose config
 ```
 
-There is currently no automated test suite.
+The test suite uses Node's built-in `node:test` runner and currently covers
+pure validation/path safety helpers.
 
 ### Terminal Output
 

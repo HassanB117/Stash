@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=capture-mark-white-20260513">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>stash</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Rajdhani:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="/style.css?v=grid-padding-fix-3">
+<link rel="stylesheet" href="/style.css?v=nav-center-20260513">
 </head>
 <body class="app-shell">
 
@@ -44,9 +44,6 @@
       <button type="button" class="ghost" id="logoutBtn" aria-label="Log out" title="Log out"><span class="btn-icon" aria-hidden="true">⏻</span><span class="btn-label">LOGOUT</span></button>
     </div>
   </header>
-
-  <!-- Hidden filters nav — kept so app.js renderFilters() doesn't error -->
-  <nav class="filters" id="filters" aria-hidden="true"></nav>
 
   <!-- ── RECENT tab panel ───────────────────────────────────────────── -->
   <div class="tab-panel active" id="panelRecent" role="tabpanel" aria-labelledby="tabRecent">
@@ -98,8 +95,8 @@
       <button type="button" class="lb-share" id="lbShare" aria-label="Create share link">⤴ SHARE</button>
       <button type="button" class="lb-close" id="lbClose" aria-label="Close viewer">×</button>
     </div>
-    <button type="button" class="lb-nav lb-prev" id="lbPrev" aria-label="Previous capture" hidden>&#8249;</button>
-    <button type="button" class="lb-nav lb-next" id="lbNext" aria-label="Next capture" hidden>&#8250;</button>
+    <button type="button" class="lb-nav lb-prev" id="lbPrev" aria-label="Previous capture" hidden><svg class="lb-nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 5 8 12 15 19"></polyline></svg></button>
+    <button type="button" class="lb-nav lb-next" id="lbNext" aria-label="Next capture" hidden><svg class="lb-nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="9 5 16 12 9 19"></polyline></svg></button>
     <div class="lb-content" id="lbContent"></div>
     <div class="lb-meta" id="lbMeta" hidden>
       <span class="lb-meta-game" id="lbGame"></span>
@@ -240,7 +237,7 @@
     </button>
   </nav>
 
-  <script src="/common.js"></script>
-  <script src="/app.js"></script>
+  <script src="/common.js?v=nav-center-20260513"></script>
+  <script src="/app.js?v=nav-center-20260513"></script>
 </body>
 </html>

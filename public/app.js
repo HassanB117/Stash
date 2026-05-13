@@ -1,6 +1,5 @@
 (function () {
   let allCaptures = {};
-  let currentFilter = 'All';
   let currentItem = null;
   let currentDrillGame = null;
   let favorites = new Set();
@@ -27,12 +26,12 @@
       if (!p) return;
       if (metaCache[p] !== undefined) {
         var mc = metaCache[p];
-        if (mc && mc.duration) badge.textContent = '▶ ' + mc.duration;
+        if (mc && mc.duration) setDurationBadge(badge, mc.duration);
         return;
       }
       fetch('/api/file-meta?path=' + encodeURIComponent(p))
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (m) { metaCache[p] = m; if (m && m.duration) badge.textContent = '▶ ' + m.duration; })
+        .then(function (m) { metaCache[p] = m; if (m && m.duration) setDurationBadge(badge, m.duration); })
         .catch(function () {});
     });
   }, { rootMargin: '200px' });
@@ -60,8 +59,13 @@
     return force ? url + (url.indexOf('?') === -1 ? '?' : '&') + 'refresh=1' : url;
   }
 
+  function setDurationBadge(badge, label) {
+    var text = badge && badge.querySelector('.badge-text');
+    if (text) text.textContent = label;
+    else if (badge) badge.textContent = '▶ ' + label;
+  }
+
   const grid            = $('grid');
-  const filtersEl       = $('filters');
   const lightbox        = $('lightbox');
   const lbContent       = $('lbContent');
   const lbMeta          = $('lbMeta');
@@ -197,7 +201,6 @@
     gameMeta = {};
     Object.keys(allCaptures).forEach(function (key) { gameMeta[key] = parsePlatform(key); });
     pruneFavoritesToLoadedCaptures();
-    renderFilters();
     updateCounts();
     renderPlatformPills();
     renderGamesGrid(Object.keys(allCaptures).sort());
@@ -397,22 +400,6 @@
     });
   }
 
-  // ── Filters (hidden, kept for compat) ────────────────────────────────
-  function renderFilters() {
-    var games = Object.keys(allCaptures).sort();
-    var tags  = ['All'].concat(games);
-    filtersEl.innerHTML = tags.map(function (t) {
-      return '<span class="filter ' + (t === currentFilter ? 'active' : '') +
-             '" data-game="' + escapeHtml(t) + '">' + escapeHtml(t) + '</span>';
-    }).join('');
-    filtersEl.querySelectorAll('.filter').forEach(function (el) {
-      el.addEventListener('click', function () {
-        currentFilter = el.dataset.game;
-        renderFilters();
-      });
-    });
-  }
-
   // ── Recent grid ───────────────────────────────────────────────────────
   function renderRecentGrid(opts) {
     opts = opts || {};
@@ -509,7 +496,7 @@
     var tileLabel   = escapeHtml(gameLabel.slice(0, 24));
     var ariaLabel   = escapeHtml('Open ' + item.name + ' from ' + gameLabel);
     var media      = item.type === 'video'
-      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + previewUrl + '" data-file="' + fileUrl + '"></video><div class="badge" data-dur-badge data-dur-path="' + safePath + '">▶ CLIP</div>'
+      ? '<video poster="' + thumbUrl + '" muted loop preload="none" playsinline data-src="' + previewUrl + '" data-file="' + fileUrl + '"></video><div class="badge" data-dur-badge data-dur-path="' + safePath + '"><span class="badge-icon" aria-hidden="true">▶</span><span class="badge-text">CLIP</span></div>'
       : '<img src="' + thumbUrl + '" alt="' + safeName + '" loading="lazy" data-fallback="' + fileUrl + '">';
     return '<div class="tile" role="button" tabindex="0" data-index="' + i + '" aria-label="' + ariaLabel + '">' +
       '<button type="button" class="tile-star' + (starred ? ' starred' : '') +

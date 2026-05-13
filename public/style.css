@@ -375,9 +375,6 @@ button.ghost:hover {
 .tab-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
 .tab-panel.active { display: flex; }
 
-/* ── Filters (hidden, kept for JS compat) ── */
-.filters { display: none !important; }
-
 /* ── Games panel ── */
 .games-header {
   padding: 14px 28px 0;
@@ -387,62 +384,134 @@ button.ghost:hover {
   position: relative; max-width: 280px;
 }
 .games-search-icon {
-  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
   font-size: 14px; color: var(--text-dim); pointer-events: none;
 }
 .games-search {
   width: 100%;
   background: rgba(0,0,0,0.3);
   border: 1px solid rgba(255,255,255,0.08);
-  color: var(--text); padding: 7px 12px 7px 30px;
+  color: var(--text); padding: 7px 34px 7px 14px;
   font-size: 11px; font-family: var(--mono); letter-spacing: 0.03em;
 }
 .games-search:focus { border-color: var(--accent); }
 .games-count { font-size: 9px; color: var(--text-dim); letter-spacing: 2px; margin-top: 8px; min-height: 16px; }
 
+/* Games tab - card grid (single source of truth)
+   Desktop: cards stretch to fill row, 16:10 art, info below
+   Mobile  (<= 700px): 2 columns, same proportions, smaller text
+*/
+
 .games-grid-wrap {
-  flex: 1; overflow-y: auto;
+  flex: 1;
+  overflow-y: auto;
   padding: 14px 28px 40px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, 280px);
-  justify-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-auto-rows: auto;
   gap: 12px;
   align-content: start;
+  align-items: start;
 }
 
-/* Game card */
 .game-card {
-  position: relative; cursor: pointer; overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.06);
+  position: relative;
+  display: block;
+  cursor: pointer;
+  overflow: hidden;
+  border: 1px solid rgba(208, 226, 242, 0.10);
+  background: var(--surface2);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
   transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
-  background: var(--surface);
   animation: tileIn 0.2s ease both;
+  text-align: left;
+  clip-path: none;
 }
-.game-card:hover {
-  transform: translateY(-3px);
-  border-color: rgba(0,212,255,0.2);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+.game-card:hover,
+.game-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(0, 212, 255, 0.36);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42),
+              0 0 0 1px rgba(0, 212, 255, 0.08) inset;
 }
+
 .game-card-art {
-  aspect-ratio: 16 / 10 !important;
-  height: auto !important;
+  display: block;
   width: 100%;
-  position: relative; overflow: hidden;
+  aspect-ratio: 16 / 10;
+  position: relative;
+  overflow: hidden;
+  background-color: #090d14;
+  background-size: cover;
+  background-position: center;
 }
+.game-card-art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.58)),
+    linear-gradient(90deg, rgba(0, 212, 255, 0.10), transparent 42%);
+  pointer-events: none;
+}
+
 .game-card-info {
-  padding: 10px 12px 11px;
+  display: block;
+  padding: 12px 14px 14px;
+  min-height: 56px;
+  background: var(--surface2);
 }
 .game-card-name {
-  font-family: var(--display); font-weight: 600; font-size: 13px;
-  color: var(--text); letter-spacing: 1px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: block;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: color 0.2s;
 }
 .game-card:hover .game-card-name { color: var(--accent); }
 .game-card-meta {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-top: 5px;
-  font-size: 9px; color: var(--text-dim); font-family: var(--mono); letter-spacing: 1.5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+}
+.game-card-meta span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Mobile: 2 columns, slightly smaller paddings & fonts */
+@media (max-width: 700px) {
+  .games-grid-wrap {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 10px 10px calc(56px + env(safe-area-inset-bottom, 0px) + 12px);
+  }
+  .game-card-info { padding: 9px 11px 11px; min-height: 48px; }
+  .game-card-name { font-size: 12px; letter-spacing: 0.6px; }
+  .game-card-meta { font-size: 9px; margin-top: 4px; letter-spacing: 1px; }
+}
+
+/* Very narrow phones: stack meta vertically so the date never collides with the count */
+@media (max-width: 420px) {
+  .games-grid-wrap { gap: 8px; }
+  .game-card-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
 }
 
 /* Game drilldown subheader */
@@ -521,10 +590,31 @@ button.ghost:hover {
 
 .badge {
   position: absolute; top: 7px; right: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 24px;
   background: rgba(0,0,0,0.65);
   border: 1px solid rgba(255,255,255,0.15);
-  color: #fff; font-size: 9px; padding: 2px 7px;
+  color: #fff; font-size: 11px; padding: 0 8px;
   font-family: var(--mono); letter-spacing: 0.05em;
+  line-height: 1;
+}
+.badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  transform: translateY(0.5px);
+}
+.badge-text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transform: translateY(0.5px);
 }
 
 .empty {
@@ -715,11 +805,25 @@ button.ghost:hover {
   position: fixed; top: 50%; transform: translateY(-50%);
   background: rgba(255,255,255,0.07);
   border: 1px solid rgba(255,255,255,0.15);
-  color: #fff; font-size: 36px; cursor: pointer;
+  color: #fff; font-size: 0; cursor: pointer;
   width: 48px; height: 64px; z-index: 101;
   transition: background 0.15s, opacity 0.15s;
   padding: 0; line-height: 1; clip-path: none;
   display: flex; align-items: center; justify-content: center;
+}
+.lb-nav-icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+  color: inherit;
+  overflow: visible;
+}
+.lb-nav-icon polyline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
 }
 .lb-nav:hover { background: rgba(255,255,255,0.18); }
 .lb-prev { left: 12px; }
@@ -1024,16 +1128,8 @@ button.ghost:hover {
     padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 16px);
   }
 
-  /* Game card grid: 2 columns */
-  .games-grid-wrap {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
-    padding: 10px 10px calc(56px + env(safe-area-inset-bottom, 0px) + 12px);
-  }
+  /* Games header padding on mobile (grid + card rules live in the consolidated games section above) */
   .games-header { padding: 10px 12px 0; }
-  .game-card-art { aspect-ratio: 16 / 10; height: auto; }
-  .game-card-name { font-size: 11px; }
-  .game-card-meta { font-size: 8px; }
 
   .drilldown-bar { padding: 10px 14px; gap: 10px; }
   .drilldown-title { font-size: 12px; }
@@ -1395,28 +1491,19 @@ button.ghost:hover {
   width: 100%;
   margin-top: 0;
 }
-.games-grid-wrap,
 .grid {
   gap: 12px;
   padding: 18px 24px 64px;
-}
-.grid {
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
 }
-.games-grid-wrap {
-  grid-template-columns: repeat(auto-fill, 280px);
-}
 
-.tile,
-.game-card {
+.tile {
   border-color: rgba(208, 226, 242, 0.10);
   background: var(--surface2);
   box-shadow: 0 1px 0 rgba(255,255,255,0.035) inset;
 }
 .tile:hover,
-.tile:focus-visible,
-.game-card:hover,
-.game-card:focus-visible {
+.tile:focus-visible {
   transform: translateY(-2px);
   border-color: rgba(0, 212, 255, 0.36);
   box-shadow: 0 14px 34px rgba(0,0,0,0.42), 0 0 0 1px rgba(0, 212, 255, 0.08) inset;
@@ -1458,6 +1545,7 @@ button.ghost:hover {
 .badge {
   right: 8px;
   top: 8px;
+  min-height: 24px;
   color: rgba(255,255,255,0.86);
 }
 .tile-star {
@@ -1474,46 +1562,6 @@ button.ghost:hover {
 .tile-star:hover {
   color: var(--gold);
   border-color: rgba(255, 213, 104, 0.82);
-}
-
-.game-card {
-  display: block;
-  width: 100%;
-  padding: 0;
-  text-align: left;
-  text-transform: none;
-  clip-path: none;
-  min-height: 0;
-}
-.game-card-art {
-  aspect-ratio: 16 / 10;
-  background-color: #090d14;
-}
-.game-card-art::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(180deg, rgba(0,0,0,0.02), rgba(0,0,0,0.58)),
-    linear-gradient(90deg, rgba(0,212,255,0.10), transparent 42%);
-  pointer-events: none;
-}
-.game-card-info {
-  padding: 11px 12px 12px;
-}
-.game-card-name {
-  color: var(--text-strong);
-  font-size: 14px;
-}
-.game-card-meta {
-  gap: 8px;
-  color: var(--text-dim);
-}
-.game-card-meta span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .platform-pill {
@@ -1867,14 +1915,7 @@ button.ghost:hover {
     min-height: 32px;
     padding-bottom: 2px;
   }
-  .games-grid-wrap {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-    padding: 10px 10px calc(62px + env(safe-area-inset-bottom, 0px) + 12px);
-  }
-  .game-card-art {
-    aspect-ratio: 16 / 10; height: auto;
-  }
+  /* Games grid + card rules at this breakpoint live in the consolidated games section above */
   .tile-label {
     padding: 22px 7px 7px;
   }
@@ -1946,18 +1987,8 @@ button.ghost:hover {
 }
 
 @media (max-width: 420px) {
-  .grid,
-  .games-grid-wrap {
-    gap: 6px;
-  }
-  .game-card-name {
-    font-size: 12px;
-  }
-  .game-card-meta {
-    font-size: 8px;
-    flex-direction: column;
-    align-items: flex-start;
-  }
+  /* Games card rules at this breakpoint live in the consolidated games section above */
+  .grid { gap: 6px; }
   .vplayer-bar {
     gap: 6px;
   }
@@ -2113,5 +2144,46 @@ main.grid > .tile > video {
 @media (max-width: 700px) {
   main.grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+/* Final games-card enforcement: reserve art height even when aspect-ratio is ignored. */
+.games-grid-wrap {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)) !important;
+  grid-auto-rows: max-content !important;
+  align-content: start !important;
+  align-items: start !important;
+  gap: 12px !important;
+}
+.games-grid-wrap > .game-card {
+  display: flex !important;
+  flex-direction: column;
+  min-width: 0;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
+.games-grid-wrap > .game-card > .game-card-art {
+  flex: 0 0 auto;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: auto !important;
+}
+.games-grid-wrap > .game-card > .game-card-art::before {
+  content: '';
+  display: block;
+  padding-top: 62.5%;
+}
+.games-grid-wrap > .game-card > .game-card-info {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+@media (max-width: 700px) {
+  .games-grid-wrap {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+    padding: 10px 10px calc(60px + env(safe-area-inset-bottom, 0px) + 12px) !important;
   }
 }
